@@ -57,3 +57,4 @@ To train the foundation model, run:
   year={2024}
 }
 ```
+# idgenrec_singlegpu
