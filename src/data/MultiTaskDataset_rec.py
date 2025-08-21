@@ -40,19 +40,19 @@ class MultiTaskDatasetRec(Dataset):
         self.collaborative_float32 = self.args.collaborative_float32
         
         if self.rank == 0:
-            logging.info(f"Generating data for {self.dataset} dataset")
+            logging.info(f"Generating REC data for {self.dataset} dataset (user sequence + textual ID (input+target))")
 
-        # load and check prompt
-        if self.rank == 0:
-            logging.info(f"Get prompt template from {args.prompt_file}")
+        # # load and check prompt
+        # if self.rank == 0:
+        #     logging.info(f"Get prompt template from {args.prompt_file}")
         self.prompt = load_prompt_template(args.prompt_file, self.tasks)
 
-        if self.rank == 0 and 'sequential' in self.prompt:  # changed JT
-            logging.info(f"{self.prompt['sequential']['seen']['0']['Input']}")
+        # if self.rank == 0 and 'sequential' in self.prompt:  # changed JT
+        #     logging.info(f"{self.prompt['sequential']['seen']['0']['Input']}")
         check_task_prompt(self.prompt, self.tasks)
         self.info = get_info_from_prompt(self.prompt)
-        if self.rank == 0:
-            logging.info(f"Required info: {self.info}")
+        # if self.rank == 0:
+        #     logging.info(f"Required info: {self.info}")
         
         if 'history' in self.info:
             self.max_his = args.max_his
@@ -119,6 +119,16 @@ class MultiTaskDatasetRec(Dataset):
                 self.new_token = []
                 for idx in list(self.item_map.values()):
                     self.new_token += re.findall(r'\<.*?\>', idx)
+            elif self.item_indexing == 'generative':             
+                print("Current phase (MultiTaskDatasetRec): ", self.phase)  
+                indexing.generative_indexing_rec(self.data_path, self.dataset, self.user_sequence_dict, self.model_gen, self.tokenizer, regenerate=regenerate, phase=self.phase)
+                self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_rec(
+                    self.data_path, self.dataset, self.user_sequence_dict,
+                    model_gen=self.model_gen, tokenizer=self.tokenizer, phase=phase, 
+                    regenerate=False
+                )
+                
+                logging.info("Reindex REC data with generative indexing method (single GPU)")
             else:
                 raise NotImplementedError
             
@@ -131,8 +141,12 @@ class MultiTaskDatasetRec(Dataset):
         # load data
         if self.mode == 'train':
             if self.rank == 0:
-                logging.info("loading training data")
+                logging.info("LOAD TRAIN DATA REC")
             self.data_samples = self.load_train()
+            # with open('train_data_rec_samples.txt', 'w') as f:
+            #     for sample in self.data_samples:
+            #         f.write(f"{sample}\n")
+        
 
         elif self.mode == 'validation':
             self.data_samples = self.load_validation()
@@ -179,8 +193,8 @@ class MultiTaskDatasetRec(Dataset):
         - task_index: the cumulative index for each task. if task_index[i-1] <= idx < task_index[i], then the idx belongs to task[i]
             - For example, there are 100 data samples in total, there are 3 tasks, the task_prompt_num is [2,1,3], then the task_index is [200, 300, 600].
         """
-        if self.rank == 0:
-            logging.info(f"Getting prompt information")
+        # if self.rank == 0:
+        #     logging.info(f"Getting prompt information")
         if self.mode == 'train':
             if self.args.sample_prompt == 0:
                 self.task_prompt_num = [len(self.prompt[task]['seen']) for task in self.tasks]
@@ -208,32 +222,56 @@ class MultiTaskDatasetRec(Dataset):
 
     def load_train(self):
         """
-        Load training data samples
+        Load training data samples in the format:
+        {
+            'dataset': dataset_name,
+            'user_id': user_index,
+            'history': tokenized user history,
+            'target': tokenized target item
+        }
         """
-        data_samples = []
+        data_samples = []  # List to store training examples
+
         for user in self.reindex_user_seq_dict:
+            # Only use the training portion (exclude last 2 items for val/test)
             items = self.reindex_user_seq_dict[user][:-2]
+
             for i in range(len(items)):
+                # Optional: skip training examples where the history is empty
                 if i == 0:
                     if self.skip_empty_his > 0:
                         continue
+
                 one_sample = dict()
                 one_sample['dataset'] = self.dataset
                 one_sample['user_id'] = user
+
+                # Set the target item to predict at time i
+                # If self.prefix > 0, add string prefix 'item_' (e.g., for T5 input formatting)
                 if self.prefix > 0:
                     one_sample['target'] = 'item_' + items[i]
                 else:
                     one_sample['target'] = items[i]
+
+                # Optionally include history if 'history' is one of the fields to use
                 if 'history' in self.info:
-                    history = items[:i]
+                    history = items[:i]  # Take all items before the current index
+
+                    # Limit the history length if max_his is set
                     if self.max_his > 0:
                         history = history[-self.max_his:]
+
+                    # Format the history string, optionally adding 'item_' prefix
                     if self.prefix > 0:
                         one_sample['history'] = self.his_sep.join(["item_" + item_idx for item_idx in history])
                     else:
                         one_sample['history'] = self.his_sep.join(history)
+
+                # Append this training sample to the list
                 data_samples.append(one_sample)
+
         return data_samples
+
     
     def load_validation(self):
         """
@@ -271,8 +309,8 @@ class MultiTaskDatasetRec(Dataset):
                 self._construct_sentence_all()
             else:
                 self._construct_sentence_sample()
-            if self.rank == 0:
-                logging.info(f"Input: {self.data['input'][100]} , Output: {self.data['output'][100]} ")
+            #if self.rank == 0:
+            #    logging.info(f"Input: {self.data['input'][100]} , Output: {self.data['output'][100]} ")
         elif self.mode == 'validation':
             if self.args.valid_prompt_sample == 0:
                 self._construct_sentence_valid()

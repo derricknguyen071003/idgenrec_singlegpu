@@ -109,15 +109,92 @@ def setup_logging(args):
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     
     return
-    
+
+# In src/utils/utils.py
+# Ensure 'os' is imported at the top of your utils.py: import os
 
 def log_name(args):
-    if len(args.datasets.split(',')) > 1:
-        folder_name = 'SP5'
+    """
+    Creates a descriptive log filename based on experiment arguments.
+    Prioritizes alternating training parameters if an alt_style is specified.
+    """
+    # Determine base name part from dataset(s)
+    # Use getattr for safety, in case args.datasets is not defined by any active parser
+    # (though parse_global_args or dataset_args should define it)
+    dataset_str = getattr(args, 'datasets', 'UnknownDataset') 
+    if isinstance(dataset_str, str) and len(dataset_str.split(',')) > 1:
+        log_name_base = 'MultiDs' # Indicator for multiple datasets
     else:
-        folder_name = args.datasets
-    params = [str(args.distributed), str(args.sample_prompt), str(args.his_prefix), str(args.skip_empty_his), str(args.max_his), str(args.master_port), folder_name, args.tasks, args.backbone, args.item_indexing, str(args.lr), str(args.epochs), str(args.batch_size), args.sample_num, args.prompt_file[3:-4]]
-    return '_'.join(params)
+        log_name_base = str(dataset_str).replace('/', '_') # Sanitize if it's path-like
+
+    params = [log_name_base]
+
+    # Helper to add param to log name if it exists and is not a common default/empty value
+    def add_param_if_relevant(attr_name, display_prefix="", default_to_skip=None, is_path=False):
+        if hasattr(args, attr_name):
+            val = getattr(args, attr_name)
+            
+            if val is None or (isinstance(val, str) and not val.strip()): # Skip None or empty strings
+                return
+            if default_to_skip is not None and val == default_to_skip: # Skip if it's a common default
+                return
+
+            prefix = display_prefix or attr_name.replace('_', '') # Use display_prefix or a shortened attr_name
+            
+            current_val_str = str(val)
+            if is_path:
+                current_val_str = os.path.splitext(os.path.basename(current_val_str))[0] # Filename without ext
+            
+            params.append(f"{prefix}{current_val_str}")
+
+    # Add parameters relevant to the experiment
+    current_alt_style = getattr(args, 'alt_style', 'none') # Default to 'none' if not set
+    add_param_if_relevant('alt_style', 'as', default_to_skip='none') 
+    
+    if current_alt_style and str(current_alt_style).lower() not in ['none', '']:
+        # Alternating training parameters
+        add_param_if_relevant('rounds', 'r')
+        add_param_if_relevant('id_epochs', 'ide')
+        add_param_if_relevant('rec_epochs', 'rece')
+        add_param_if_relevant('id_lr', 'idlr')
+        add_param_if_relevant('rec_lr', 'reclr')
+        if hasattr(args, 'id_batch_size'): params.append(f"idbs{args.id_batch_size}")
+        if hasattr(args, 'rec_batch_size'): params.append(f"recbs{args.rec_batch_size}")
+    else: 
+        # Fallback to generic epochs, lr, batch_size if not using a recognized alternating style
+        # These attributes ('epochs', 'lr', 'batch_size') must be defined in args by some parser
+        # if this path is taken. The parse_global_args can provide defaults.
+        add_param_if_relevant('epochs', 'e', default_to_skip=0) # Check against a common "not set" default
+        add_param_if_relevant('lr', 'lr', default_to_skip=0.0)
+        if not (hasattr(args, 'alt_style') and args.alt_style and str(args.alt_style).lower() not in ['none', '']):
+             # Only add generic batch_size if not already covered by idbs/recbs
+            if not (hasattr(args, 'id_batch_size') or hasattr(args, 'rec_batch_size')):
+                add_param_if_relevant('batch_size', 'bs', default_to_skip=0)
+        
+    add_param_if_relevant('backbone', 'bb')
+    add_param_if_relevant('item_indexing', 'idx')
+    add_param_if_relevant('tasks')
+    add_param_if_relevant('sample_prompt', 'sp', default_to_skip=0)
+    if getattr(args, 'sample_prompt', 0) == 1 and hasattr(args, 'sample_num'): # Only add sample_num if sample_prompt is active
+        add_param_if_relevant('sample_num', 'sn')
+    add_param_if_relevant('max_his', 'mh', default_to_skip=-1)
+    add_param_if_relevant('his_prefix', 'hp', default_to_skip=0) 
+    add_param_if_relevant('skip_empty_his', 'seh', default_to_skip=1)
+    add_param_if_relevant('prompt_file', 'pf', is_path=True)
+    add_param_if_relevant('seed') 
+    if hasattr(args, 'distributed'): add_param_if_relevant('distributed', 'dist', default_to_skip=0)
+
+
+    # Join parameters, ensuring they are strings and sanitized
+    final_log_name_parts = []
+    for p_val_str in params:
+        # Sanitize common problematic characters for filenames
+        s_val = str(p_val_str).replace(':', '_').replace('[', '').replace(']', '').replace(',', '-').replace("'", "")
+        s_val = s_val.replace(' ', '').replace('/', '_').replace('..', '') # Remove spaces, replace slashes
+        if s_val: # Add only if it's not an empty string after processing
+            final_log_name_parts.append(s_val)
+            
+    return '_'.join(final_log_name_parts).strip('_')
 
 def setup_model_path(args):
     import datetime

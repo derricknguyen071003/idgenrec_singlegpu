@@ -1,132 +1,206 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 import torch
+torch.cuda.empty_cache()
 import os
 import argparse
 import logging
 import datetime
-from transformers import AutoTokenizer, T5ForConditionalGeneration, AutoModelForSeq2SeqLM
-from torch.utils.data import ConcatDataset, DataLoader
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from data.MultiTaskDataset_gen import MultiTaskDatasetGen
-from data.MultiTaskDataset_rec import MultiTaskDatasetRec
-from runner.SingleRunner import SingleRunner
-from runner.DistributedRunner_gen import DistributedRunner
-# from runner.DistributedRunner import DistributedRunner
+
+from transformers import AutoTokenizer, T5ForConditionalGeneration, T5Config, AutoModelForSeq2SeqLM 
+from data.MultiTaskDataset_gen import MultiTaskDatasetGen # For TrainSetID
+from data.MultiTaskDataset_rec import MultiTaskDatasetRec # For TrainSetRec
+from runner.SingleRunner import SingleRunner 
+
 from processor.Collator import CollatorGen, Collator, TestCollator
 from processor.SingleMultiDataTaskSampler import SingleMultiDataTaskSampler
-from processor.DistMultiDataTaskSampler import DistMultiDataTaskSampler
-from torch.utils.data.distributed import DistributedSampler
-from transformers import T5Config
-from model.P5 import P5
+
 from utils import utils
-from utils import initialization
-from torch.nn.parallel import DistributedDataParallel as DDP
+from utils import initialization # If used for model init
 from utils.dataset_utils import get_dataset_generative, get_loader
-import pdb
 from undecorated import undecorated
 from types import MethodType
 
-    
-    
-    
-def distributed_launch():
-    parser = argparse.ArgumentParser(description='OpenP5')
-    parser = utils.parse_global_args(parser)
-    parser = MultiTaskDatasetGen.parse_dataset_args(parser)
-    parser = DistMultiDataTaskSampler.parse_sampler_args(parser)
-    parser = DistributedRunner.parse_runner_args(parser)
+
+
+def single_main():
+    start_time = datetime.datetime.now()
+    parser = argparse.ArgumentParser(description='IDGenRec Single GPU Alternating Training')
+    parser = utils.parse_global_args(parser) 
+    MultiTaskDatasetGen.parse_dataset_args(parser) 
+    SingleMultiDataTaskSampler.parse_sampler_args(parser) 
+    parser = SingleRunner.parse_runner_args(parser) 
     args, extras = parser.parse_known_args()
-    
-    ngpus_per_node = torch.cuda.device_count()
-    args.world_size = ngpus_per_node
-        
-    mp.spawn(
-        distributed_main, args=(args, ), nprocs=ngpus_per_node, join=True
-    )
-    
-    
-def distributed_main(local_rank, args):
-    # distributed learning
-    args.rank = local_rank
+
+    # Setup logging, seed, device
     utils.set_seed(args.seed)
-    os.environ['MASTER_ADDR'] = args.master_addr
-    os.environ['MASTER_PORT'] = args.master_port
-    torch.cuda.set_device(local_rank)
-    dist.init_process_group(
-        backend="nccl", timeout=datetime.timedelta(seconds=18000), world_size=args.world_size, rank=local_rank
-    )
-    utils.setup_logging(args)
-    utils.setup_model_path(args)
+    utils.setup_logging(args) 
+    utils.setup_model_path(args) 
 
-    if args.rank == 0:
-        logging.info(vars(args))
-    
-    device = f"cuda:{local_rank}"
-    args.gpu = local_rank
+    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() and args.gpu is not None else "cpu")
+    args.device = device 
+    args.distributed = 0 
+    args.rank = 0        
+    args.world_size = 1  
 
-    if 't5' in args.backbone:
-        config = T5Config.from_pretrained(args.backbone)
-        if local_rank == 0:
-            logging.info(f"Use {args.backbone} backbone model")
-    else:
-        raise NotImplementError
+    logging.info("========= Initializing for Single GPU Alternating Training =========")
+    #logging.info(f"Script Arguments: {vars(args)}")
+    logging.info(f"Using device: {device}")
+    config = T5Config.from_pretrained(args.backbone)
+    model_gen = AutoModelForSeq2SeqLM.from_pretrained("nandakishormpai/t5-small-machine-articles-tag-generation")
     model_rec = T5ForConditionalGeneration.from_pretrained(args.backbone, config=config)
+    tokenizer = AutoTokenizer.from_pretrained(args.backbone)
 
     # generate with gradient
     generate_with_grad = undecorated(model_rec.generate)
     model_rec.generate_with_grad = MethodType(generate_with_grad, model_rec)
     model_rec.to(device)
-    
-    model_gen = AutoModelForSeq2SeqLM.from_pretrained("nandakishormpai/t5-small-machine-articles-tag-generation")
-    # generate with gradient
     generate_with_grad = undecorated(model_gen.generate)
     model_gen.generate_with_grad = MethodType(generate_with_grad, model_gen)
     model_gen.to(device)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.backbone)
-
     model_rec.resize_token_embeddings(len(tokenizer))
     model_gen.resize_token_embeddings(len(tokenizer))
-    # load models
-    if args.rec_model_path:
-        if local_rank == 0:
-            logging.info(f"Load model from {args.rec_model_path}")
-        model_rec = utils.load_model(model_rec, args.rec_model_path, args, loc=device)
-        model_rec.to(device)
-    
-    if args.id_model_path:
-        if local_rank == 0:
-            logging.info(f"Load model from {args.id_model_path}")
-        model_gen = utils.load_model(model_gen, args.id_model_path, args, loc=device)
-        model_gen.to(device)
+    logging.info(f"Tokenizer loaded with vocab size: {len(tokenizer)}")
+    if getattr(args, 'id_model_path', None):
+            logging.info(f"LOAD GEN CHECKPOINT for model_gen from: {args.id_model_path}")
+            model_gen.load_state_dict(torch.load(args.id_model_path, map_location=device))
+
+    if getattr(args, 'rec_model_path', None):
+            logging.info(f"LOAD REC CHECKPOINT for model_rec from: {args.rec_model_path}")
+            model_rec.load_state_dict(torch.load(args.rec_model_path, map_location=device))
+
+    #region # 2. Load model_gen (ID Generator Model)
+    # id_model_backbone_name = getattr(args, 'id_model_backbone', None) or args.backbone
+    # try:
+    #     # Load config and modify vocab size to match checkpoint
+    #     config = T5Config.from_pretrained(id_model_backbone_name)
+        
+    #     # Set vocab_size to your desired value
+    #     config.vocab_size = 32100  # Change this to your desired vocab size
+
+    #     # Load the model with the modified config
+    #     model_gen = T5ForConditionalGeneration.from_pretrained(
+    #         "nandakishormpai/t5-small-machine-articles-tag-generation",
+    #         config=config,
+    #         ignore_mismatched_sizes=True  # Allows loading even if vocab_size differs
+    #     )
+
+    #     # Load checkpoint
+    #     if getattr(args, 'id_model_path', None):
+    #         logging.info(f"LOAD GEN CHECKPOINT for model_gen from: {args.id_model_path}")
+    #         model_gen.load_state_dict(torch.load(args.id_model_path, map_location=device))
+    #     # generate_with_grad = undecorated(model_gen.generate)
+    #     # model_gen.generate_with_grad = MethodType(generate_with_grad, model_gen)
+    #     # model_gen.to(device)
+
+    #     logging.info(f"GEN: ({type(model_gen).__name__}) on {device} with vocab size {getattr(model_gen.config, 'vocab_size', 'unknown')}.")
+    # except Exception as e:
+    #     logging.error(f"Failed to load model_gen from '{id_model_backbone_name}': {e}")
+    #     return
 
 
-    TrainSetID, TrainSetRec, ValidSet = get_dataset_generative(args, model_gen, tokenizer)
-    train_loader_id, train_loader_rec, valid_loader = get_loader(args, tokenizer, TrainSetID, TrainSetRec, ValidSet, local_rank)
+    # # Recommender Model (model_rec)
+    # rec_model_backbone_name = getattr(args, 'rec_model_backbone', None) or args.backbone
+    # try:
+    #     # Load config first to allow overriding vocab_size if needed
+    #     config_rec = T5Config.from_pretrained(rec_model_backbone_name)
+        
+    #     # Optional: Set vocab size to match known checkpoint size (e.g., 32100)
+    #     config_rec.vocab_size = 32100  # Only if you know this is true
 
+    #     # Initialize the model using that config
+    #     model_rec = T5ForConditionalGeneration(config_rec)
 
-    if args.random_initialize == 1:
-        if local_rank == 0:
-            logging.info("Random initialize number related tokens")
-        initialization.random_initialization(model_rec, tokenizer)
-        initialization.random_initialization(model_gen, tokenizer)
+    #     # Load checkpoint if provided
+    #     if getattr(args, 'rec_model_path', None):
+    #         logging.info(f"LOAD REC CHECKPOINT for model_rec from: {args.rec_model_path}")
+    #         model_rec.load_state_dict(torch.load(args.rec_model_path, map_location=device))
 
-    runner = DistributedRunner(model_rec, model_gen, tokenizer, train_loader_id, train_loader_rec, valid_loader, device, args, local_rank)  # change loader
+    #     generate_with_grad = undecorated(model_rec.generate)
+    #     model_rec.generate_with_grad = MethodType(generate_with_grad, model_rec)
+    #     model_rec.to(device)
+    #     model_rec.to(device)
+    #     logging.info(f"REC: ({type(model_rec).__name__}) on {device} with vocab size {getattr(model_rec.config, 'vocab_size', 'unknown')}.")
+    # except Exception as e:
+    #     logging.error(f"Failed to load model_rec from '{rec_model_backbone_name}': {e}")
+    #     return
 
+    #endregion logging.info("="*40)
+
+    # 3. Prepare Datasets (TrainSetID, TrainSetRec, ValidSet)
+    TrainSetID, TrainSetRec, ValidSet = get_dataset_generative(args, model_gen, tokenizer)                                                              
+                                                               
+    logging.info(f"TrainSetID type: {type(TrainSetID)}, length: {len(TrainSetID) if TrainSetID else 'None'}")
+    logging.info(f"TrainSetRec type: {type(TrainSetRec)}, length: {len(TrainSetRec) if TrainSetRec else 'None'}")
+    #logging.info(f"ValidSet type: {type(ValidSet)}, length: {len(ValidSet) if ValidSet else 'None'}")
+   
+    # output_path_id = os.path.join(args.model_path if hasattr(args, 'model_path') else '.', "trainsetid_examples.txt")
+    # try:
+    #     with open(output_path_id, "w", encoding="utf-8") as f:
+    #         for idx, example in enumerate(TrainSetID):
+    #             f.write(f"Example {idx}:\n{str(example)}\n\n")
+    #     logging.info(f"All TrainSetID examples written to {output_path_id}")
+    # except Exception as e:
+    #     logging.error(f"Failed to write TrainSetID examples to file: {e}")
+
+    # # Print all TrainSetRec examples into a file
+    # output_path_rec = os.path.join(args.model_path if hasattr(args, 'model_path') else '.', "trainsetrec_examples.txt")
+    # try:
+    #     with open(output_path_rec, "w", encoding="utf-8") as f:
+    #         for idx, example in enumerate(TrainSetRec):
+    #             f.write(f"Example {idx}:\n{str(example)}\n\n")
+    #     logging.info(f"All TrainSetRec examples written to {output_path_rec}")
+    # except Exception as e:
+    #     logging.error(f"Failed to write TrainSetRec examples to file: {e}")
+
+    logging.info("*"*40)
+   
+
+    # 4. Prepare DataLoaders
+    train_loader_id, train_loader_rec, valid_loader = get_loader(args, tokenizer, TrainSetID, TrainSetRec, ValidSet)
+    if not train_loader_id or not train_loader_rec:
+        logging.error("Failed to create necessary training data loaders for alternating training. Aborting.")
+        if not train_loader_id: logging.error("train_loader_id is None.")
+        if not train_loader_rec: logging.error("train_loader_rec is None.")
+        return
+
+    # 5. Initialize SingleRunner
+    logging.info("INITIALIZE SingleRunner...")
+    try:
+        runner = SingleRunner(
+            model_rec=model_rec,
+            model_gen=model_gen,
+            tokenizer=tokenizer,
+            train_loader_id=train_loader_id,
+            train_loader_rec=train_loader_rec,
+            valid_loader=valid_loader, 
+            device=device,
+            args=args
+        )
+        logging.info("INITIALIZE SINGLE RUNNER SUCCESSFULLY.")
+        logging.info("="*40)
+    except Exception as e:
+        logging.error(f"Error initializing SingleRunner: {e}")
+        logging.exception("Detailed traceback for SingleRunner init:")
+        return
+
+    # 6. Start Training
     if args.train:
-        if local_rank == 0:
-            logging.info("Start training")
-        runner.train_generator()
-    dist.barrier()
-    
-    return
-    
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='OpenP5')
-    parser = utils.parse_global_args(parser)
-    init_args, extras = parser.parse_known_args()
-    os.environ["CUDA_VISIBLE_DEVICES"] = init_args.gpu
-    ngpus_per_node = torch.cuda.device_count()
+        logging.info(f"Starting training with alt_style: '{args.alt_style}', rounds: {args.rounds}")
+        try:
+            runner.train() 
+            logging.info("Training finished.")
+        except Exception as e:
+            logging.error(f"Error during runner.train(): {e}")
+            logging.exception("Detailed traceback for runner.train():")
+    else:
+        logging.info("args.train is 0, skipping training. Running test if enabled...")
+        runner._test_both_models()
 
-    if init_args.distributed and ngpus_per_node > 1:
-        distributed_launch()
+    logging.info("========= single_main finished =========")
+    endtime = datetime.datetime.now()
+    logging.info(f"Total time taken: {endtime - start_time}")
+
+if __name__ == "__main__":
+    single_main()

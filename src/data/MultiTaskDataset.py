@@ -71,8 +71,8 @@ class MultiTaskDataset(Dataset):
         self.collaborative_last_token = self.args.collaborative_last_token
         self.collaborative_float32 = self.args.collaborative_float32
         
-        if self.rank == 0:
-            logging.info(f"Generating data for {self.dataset} dataset")
+        # if self.rank == 0:
+        #     logging.info(f"Generating REC data for {self.dataset} dataset")
 
         # load and check prompt
         if self.rank == 0:

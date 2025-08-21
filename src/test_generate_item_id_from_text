@@ -1,0 +1,89 @@
+import torch
+from transformers import T5Tokenizer, T5ForConditionalGeneration
+import re
+import tqdm
+import os
+from transformers import AutoModelForSeq2SeqLM
+
+def generate_item_id_from_text(item_text_file_dir, item_id_file_dir, model_gen, tokenizer, device="gpu"):
+    """
+    Generate item ID file from item text file using IDGenRec decoding logic.
+    """
+    # Setup device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_gen.to(device)
+    # model_gen.eval()
+    # tokenizer.pad_token = tokenizer.eos_token
+
+    # Read item texts
+    item_text_dict = {}
+    with open(item_text_file_dir, 'r', encoding="utf-8") as file:
+        for line in file:
+            parts = line.strip().split(' ', 1)
+            if len(parts) < 2:
+                continue
+            id_, text = parts
+            item_text_dict[id_] = text.strip()
+
+    id_set = set()
+    item_id_dict = {}
+    max_dp = 0
+
+    for iid, text in tqdm.tqdm(item_text_dict.items(), desc="Generating IDs"):
+        found = False
+        dp = 1.0
+        min_l = 1
+
+        while not found:
+            inputs = tokenizer([text], max_length=256, truncation=True, return_tensors="pt").to(device)
+            generate_fn = model_gen.module.generate if hasattr(model_gen, "module") else model_gen.generate
+
+            outputs = generate_fn(
+                **inputs,
+                num_beams=10,
+                num_beam_groups=10,
+                do_sample=False,
+                min_length=min_l,
+                max_length=min_l + 10,
+                diversity_penalty=dp,
+                num_return_sequences=10
+            )
+
+            decoded_output = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+
+            for output in decoded_output:
+                tags = re.findall(r'\b\w+\b', output)
+                generated_id = ' '.join(tags)
+                if generated_id not in id_set:
+                    found = True
+                    id_set.add(generated_id)
+                    
+                    if dp > max_dp:
+                        max_dp = dp
+                    break
+
+            dp += 1.0
+            if dp >= 10:
+                min_l += 10
+                dp = 1.0
+        item_id_dict[iid] = generated_id
+    with open(item_id_file_dir, "w", encoding="utf-8") as f:
+        for key, value in item_id_dict.items():
+            f.write(f"{key} {value}\n")
+
+    print(f"[INFO] Wrote {len(item_id_dict)} IDs to {item_id_file_dir}")
+    print(f"[INFO] Max diversity_penalty used: {max_dp}")
+    return True
+
+if __name__ == "__main__":
+    # Use the path relative to this script's location
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    input_path = os.path.join(current_dir, "item_plain_text.txt")
+    output_path = os.path.join(current_dir, "Derrick_test_generated_textual_ids_original_repo.txt")
+
+    print("Loading tokenizer and model...")
+    tokenizer = T5Tokenizer.from_pretrained("t5-base")
+    model_gen = AutoModelForSeq2SeqLM.from_pretrained("nandakishormpai/t5-small-machine-articles-tag-generation")
+
+    print("Generating item textual IDs...")
+    generate_item_id_from_text(input_path, output_path, model_gen, tokenizer)

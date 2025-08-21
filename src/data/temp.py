@@ -46,13 +46,10 @@ class TestDataset(Dataset):
         
         # apply indexing method
         if self.item_indexing == 'sequential':
-            print("sequential indexing")
             self.reindex_user_seq_dict, self.item_map = indexing.sequential_indexing(self.data_path, self.dataset, self.user_sequence_dict, args.sequential_order)
         elif self.item_indexing == 'random':
-            print("random indexing")
             self.reindex_user_seq_dict, self.item_map = indexing.random_indexing(self.data_path, self.dataset, self.user_sequence_dict)
         elif self.item_indexing == 'collaborative':
-            print("collaborative indexing")
             self.reindex_user_seq_dict, self.item_map = indexing.collaborative_indexing(self.data_path, self.dataset, self.user_sequence_dict, \
                                                                                         self.collaborative_token_size, self.collaborative_cluster_num, \
                                                                                         self.collaborative_last_token, self.collaborative_float32)
@@ -60,15 +57,7 @@ class TestDataset(Dataset):
             for idx in list(self.item_map.values()):
                 self.new_token += re.findall(r'\<.*?\>', idx)
         elif self.item_indexing == "generative":
-            print("generative indexing")
-            self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_id(self.data_path, self.dataset, self.user_sequence_dict)
-            # with open("reindex_user_seq_dict (TestDataset).txt", "w") as f:
-            #     for user, seq in self.reindex_user_seq_dict.items():
-            #         f.write(f"{user}: {', '.join(seq)}\n")
-            # with open("item_map (TestDataset).txt", "w") as f:
-            #     for idx, item in self.item_map.items():
-            #         f.write(f"{idx}: {item}\n")
-
+            self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing(self.data_path, self.dataset, self.user_sequence_dict)
         else:
             raise NotImplementedError
             
@@ -238,13 +227,6 @@ class TestDatasetGen(Dataset):
                 self.new_token += re.findall(r'\<.*?\>', idx)
         elif self.item_indexing == "generative":
             self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_rec(self.data_path, self.dataset, self.user_sequence_dict, model_gen=model_gen, tokenizer=tokenizer, regenerate=regenerate, phase=self.phase)
-            # with open("reindex_user_seq_dict (TestDataset).txt", "w") as f:
-            #     for user, seq in self.reindex_user_seq_dict.items():
-            #         f.write(f"{user}: {', '.join(seq)}\n")
-            # with open("item_map (TestDataset).txt", "w") as f:
-            #     for idx, item in self.item_map.items():
-            #         f.write(f"{idx}: {item}\n")
-
         else:
             raise NotImplementedError
             
@@ -267,8 +249,13 @@ class TestDatasetGen(Dataset):
             self.positive = self.get_positive()
         
         # load data
-        self.data_samples = self.load_test()    
+        self.data_samples = self.load_test()
+        
+        
+    
         self.construct_sentence()
+        # get prompt related info, including numbers and index
+        # self.get_prompt_info()
         
     def load_test(self):
         """
@@ -343,12 +330,6 @@ class TestDatasetGen(Dataset):
             datapoint = self.data_samples[i]
             self.data['input'].append(prompt['Input'].format(**datapoint))
             self.data['output'].append(prompt['Output'].format(**datapoint))
-        # Write all constructed input-output sentence pairs to a file
-        # output_file = os.path.join(self.data_path, self.dataset, f"constructed_sentences_{self.phase}.txt")
-        # with open(output_file, "w", encoding="utf-8") as f:
-        #     for inp, out in zip(self.data['input'], self.data['output']):
-        #         f.write(f"Input: {inp}\nOutput: {out}\n\n")
-        # print(f"Constructed sentences written to {output_file}")
             
     def __getitem__(self, idx):
         if self.test_filtered > 0:

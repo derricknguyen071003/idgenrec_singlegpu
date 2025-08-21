@@ -11,6 +11,10 @@ import tqdm
 import json
 import re
 import torch
+import re
+import torch
+import tqdm
+
 
 
 def sequential_indexing(data_path, dataset, user_sequence_dict, order):
@@ -71,25 +75,38 @@ def sequential_indexing(data_path, dataset, user_sequence_dict, order):
 def generative_indexing_id(data_path, dataset, user_sequence_dict, phase=0):
     """
     Use generative indexing method to index the given user seuqnece dict.
+    output file to test: (gen_index_id)debug_reindex_user_sequence_dict_phase_
     """
 
     # user_index_file = os.path.join(data_path, dataset, 'user_indexing.txt')
     user_index_file = os.path.join(data_path, dataset, f'user_generative_index_phase_{phase}.txt')
+    print(f"[DEBUG] Looking for user_index_file at: {user_index_file}")
     item_text_file = os.path.join(data_path, dataset, 'item_plain_text.txt')
     user_sequence_file = os.path.join(data_path, dataset, 'user_sequence.txt')
 
     user_info = utils.ReadLineFromFile(user_index_file)
     user_map = get_dict_from_lines(user_info)
-
+    
     item_info = utils.ReadLineFromFile(item_text_file)
     item_map = get_dict_from_lines(item_info)
+    # with open(os.path.join(data_path, dataset, f'debug_item_map_phase_{phase}.txt'), 'w', encoding='utf-8') as f:
+    #     for k, v in item_map.items():
+    #         f.write(f"{k} {v}\n")
+    # with open(os.path.join(data_path, dataset, f'debug_user_map_phase_{phase}.txt'), 'w', encoding='utf-8') as f:
+    #     for k, v in user_map.items():
+    #         f.write(f"{k} {v}\n")
+    # print("[DEBUG] First user in user_map:", next(iter(user_map.items())))
+    # print("[DEBUG] First item in item_map:", next(iter(item_map.items())))
 
     user_sequence_info = utils.ReadLineFromFile(user_sequence_file)
     user_sequence = get_dict_from_lines(user_sequence_info)
 
-    # 
+
+ 
     reindex_user_sequence_dict = reindex(user_sequence_dict, user_map, item_map)
-    return reindex_user_sequence_dict, item_map
+    # with open(os.path.join(data_path, dataset, f'(gen_index_id)debug_reindex_user_sequence_dict_phase_{phase}.json'), 'w', encoding='utf-8') as f:
+    #     json.dump(reindex_user_sequence_dict, f, indent=2, ensure_ascii=False)
+    return reindex_user_sequence_dict, item_map #checked, user match item, item map is just the plain text
 
 
 def generative_indexing_rec(data_path, dataset, user_sequence_dict, model_gen, tokenizer, regenerate=True, phase=0):
@@ -97,6 +114,7 @@ def generative_indexing_rec(data_path, dataset, user_sequence_dict, model_gen, t
     Use generative indexing method to index the given user seuqnece dict.
     Generate ID and save to local first
     regenerate: if regenerate id file
+    output file to test: gen_indexing_rec)debug_reindex_user_sequence_dict_phase
     """
 
     # user_index_file = os.path.join(data_path, dataset, 'user_indexing.txt')
@@ -105,9 +123,10 @@ def generative_indexing_rec(data_path, dataset, user_sequence_dict, model_gen, t
     user_sequence_file = os.path.join(data_path, dataset, 'user_sequence.txt')
 
     item_index_file = os.path.join(data_path, dataset, f'item_generative_indexing_phase_{phase}.txt')
-    user_index_file = os.path.join(data_path, dataset, f'user_generative_index_phase_{phase}.txt')  # TODO
-
-    # generate item id file
+    user_index_file = os.path.join(data_path, dataset, f'user_generative_index_phase_{phase}.txt')  
+    print(f"[DEBUG] Looking for item_index_file (generative_indexing_rec) at: {item_index_file}")
+    print(f"[DEBUG] Looking for user_index_file (generative_indexing_rec) at: {user_index_file}")
+    # generate at intial phase (if not exists) or regenerate
     if (phase == 0 and not os.path.exists(item_index_file)) or (phase != 0 and regenerate):
         print(f"(re)generate textual id with id generator phase {phase}!")
         generate_item_id_from_text(item_text_file, item_index_file, model_gen, tokenizer)
@@ -115,7 +134,6 @@ def generative_indexing_rec(data_path, dataset, user_sequence_dict, model_gen, t
     item_info = utils.ReadLineFromFile(item_index_file)
     item_map = get_dict_from_lines(item_info)
 
-    # generate user id file
     if (phase == 0 and not os.path.exists(user_index_file)) or (phase != 0 and regenerate):
         print(f"(re)generate user id with id generator phase {phase}!")
         generate_user_id_from_text(item_map, user_index_file, user_sequence_file, model_gen, tokenizer)
@@ -123,14 +141,10 @@ def generative_indexing_rec(data_path, dataset, user_sequence_dict, model_gen, t
     user_info = utils.ReadLineFromFile(user_index_file)
     user_map = get_dict_from_lines(user_info)
 
-    # item_info = utils.ReadLineFromFile(item_index_file)
-    # item_map = get_dict_from_lines(item_info)
-
-    user_sequence_info = utils.ReadLineFromFile(user_sequence_file)
-    user_sequence = get_dict_from_lines(user_sequence_info)
-
     reindex_user_sequence_dict = reindex(user_sequence_dict, user_map, item_map)
-    return reindex_user_sequence_dict, item_map
+    # with open(os.path.join(data_path, dataset, f'(gen_indexing_rec)debug_reindex_user_sequence_dict_phase_{phase}.json'), 'w', encoding='utf-8') as f:
+    #     json.dump(reindex_user_sequence_dict, f, indent=2, ensure_ascii=False)
+    return reindex_user_sequence_dict, item_map #, user_sequence_dict looks alright, item_map just read the item generative file,
 
 
 def random_indexing(data_path, dataset, user_sequence_dict):
@@ -324,8 +338,7 @@ def generate_collaborative_id(user_sequence_dict, token_size, cluster_num, last_
                 
     return item_map
                 
-    
-    
+ 
 def add_token_to_indexing(item_map, grouping, index_now, token_size):
     for group in grouping:
         index_now = index_now % token_size
@@ -364,9 +377,7 @@ def get_dict_from_lines(lines):
         index_map[info[0]] = info[1]
     return index_map
         
-        
-        
-        
+         
 def generate_user_map(user_sequence_dict):
     """
     generate user map based on user sequence dict.
@@ -418,181 +429,121 @@ def construct_user_sequence_dict_generative(user_sequence):
     return user_seq_dict
 
 
-def generate_item_id_from_text(item_text_file_dir, item_id_file_dir, model_gen, tokenizer, device="cpu"):
+import torch
+import re
+import tqdm
+
+def generate_item_id_from_text(item_text_file_dir, item_id_file_dir, model_gen, tokenizer):
     """
-    generate item id file from item text file
+    Generate item textual IDs on GPU.
     """
-
-
-
     device = next(model_gen.parameters()).device
-    model_gen.to("cpu")
+    model_gen.eval()
+
     item_text_dict = {}
     with open(item_text_file_dir, 'r') as file:
-            for line in file:
-                id_, text = line.split(' ', 1)
-                item_text_dict[id_] = text.strip()  # Add to dictionary
+        for line in file:
+            id_, text = line.strip().split(' ', 1)
+            item_text_dict[id_] = text.strip()
 
-    id_set = set()  # ensure no duplication
+    id_set = set()
     item_id_dict = {}
-    count = 0
     max_dp = 0
 
-    # # Batch size can be set according to your GPU capacity
-    # TODO:
-    # BATCH_SIZE = 32
-
-    # # Create batches
-    # keys = list(item_text_dict.keys())
-    # values = list(item_text_dict.values())
-    # num_batches = len(keys) // BATCH_SIZE + int(len(keys) % BATCH_SIZE > 0)
-
-    # for i in tqdm.tqdm(range(num_batches)):
-    #     start_idx = i * BATCH_SIZE
-    #     end_idx = start_idx + BATCH_SIZE
-
-    #     batch_keys = keys[start_idx:end_idx]
-    #     batch_texts = values[start_idx:end_idx]
-
-    #     # Initialize found flags for each item in batch
-    #     found_flags = [False] * len(batch_keys)
-    #     dp_values = [1.] * len(batch_keys)
-    #     min_l_values = [1] * len(batch_keys)
-
-    #     while not all(found_flags):
-    #         # Convert batch_texts to inputs and move to GPU
-    #         inputs = tokenizer(batch_texts, max_length=512, truncation=True, return_tensors="pt", padding='max_length').to(device)
-
-    #         # Generate outputs
-    #         outputs = model_gen.generate(**inputs, num_beams=10, num_beam_groups=10, do_sample=False, 
-    #                                     min_length=min(min_l_values), max_length=max(min_l_values) + 10, 
-    #                                     diversity_penalty=max(dp_values), num_return_sequences=10)
-
-    #         # Decode outputs
-    #         decoded_outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-
-    #         # Split decoded_outputs for each item in batch
-    #         # split_decoded_outputs = torch.chunk(decoded_outputs, len(batch_keys), dim=0)
-    #         split_decoded_outputs = [decoded_outputs[j:j + 10] for j in range(0, len(decoded_outputs), 10)]
-    #         for j, (key, decoded_output) in enumerate(zip(batch_keys, split_decoded_outputs)):
-    #             if found_flags[j]:
-    #                 continue
-    #             for output in decoded_output:
-    #                 tags = re.findall(r'\b\w+\b', output)
-    #                 id = ' '.join(tags)
-    #                 if id not in id_set:
-    #                     found_flags[j] = True
-    #                     id_set.add(id)
-    #                     item_id_dict[key] = id
-    #                     break
-    #             if not found_flags[j]:
-    #                 dp_values[j] += 1
-    #                 if dp_values[j] == 10:
-    #                     min_l_values[j] += 10
-    #                     dp_values[j] = 1.
-
-    for iid, text in tqdm.tqdm(item_text_dict.items()):
+    for iid, text in tqdm.tqdm(item_text_dict.items(), desc="Generating Item IDs"):
         found = False
-        dp = 1.  # penalty for diversity
+        dp = 1.
         min_l = 1
-        while not found:  # keep trying until generating an uniq id
-            inputs = tokenizer([text], max_length=256, truncation=True, return_tensors="pt")
-            if hasattr(model_gen, "module"):
-                output = model_gen.module.generate(**inputs, num_beams=10, num_beam_groups=10, do_sample=False, min_length=min_l,
-                                                max_length=min_l + 10, diversity_penalty=dp, num_return_sequences=10)
-            else:
-                output = model_gen.generate(**inputs, num_beams=10, num_beam_groups=10, do_sample=False, min_length=min_l,
-                                                max_length=min_l + 10, diversity_penalty=dp, num_return_sequences=10)
-            decoded_output = tokenizer.batch_decode(output, skip_special_tokens=True)
-            # print('ids: ', decoded_output)
+
+        while not found:
+            inputs = tokenizer([text], max_length=256, truncation=True, return_tensors="pt").to(device)
+
+            generate_fn = model_gen.module.generate if hasattr(model_gen, "module") else model_gen.generate
+            outputs = generate_fn(
+                **inputs,
+                num_beams=10, num_beam_groups=10, do_sample=False,
+                min_length=min_l, max_length=min_l + 10,
+                diversity_penalty=dp, num_return_sequences=10
+            )
+
+            decoded_output = tokenizer.batch_decode(outputs, skip_special_tokens=True)
             for output in decoded_output:
                 tags = re.findall(r'\b\w+\b', output)
-                id = ' '.join(tags)
-                if id not in id_set:
+                gen_id = ' '.join(tags)
+                if gen_id not in id_set:
+                    id_set.add(gen_id)
+                    item_id_dict[iid] = gen_id
+                    max_dp = max(max_dp, dp)
                     found = True
-                    id_set.add(id)
-                    if dp > max_dp:
-                        max_dp = dp
-                    break  # if found a new id, use it
+                    break
+
             dp += 1
             if dp >= 10:
                 min_l += 10
                 dp = 1.
-        item_id_dict[iid] = id
 
     with open(item_id_file_dir, "w") as f:
-        for key, value in item_id_dict.items():
-            f.write(f"{key} {value}\n")
-    
-    model_gen.to(device)
-    # print('max_dp: ', max_dp)
-    return True
+        for k, v in item_id_dict.items():
+            f.write(f"{k} {v}\n")
 
+    return True
 def generate_user_id_from_text(item_map, user_index_file, user_sequence_file, model_gen, tokenizer):
     """
-    item map: dictionary
+    Generate user textual IDs on GPU.
     """
-
     device = next(model_gen.parameters()).device
-    model_gen.to("cpu")
+    model_gen.eval()
 
     user_seq_dict = {}
     with open(user_sequence_file, 'r') as file:
         for line in file:
-            words = line.strip().split()
-            if words:
-                user_seq_dict[words[0]] = words[1:]
+            parts = line.strip().split()
+            if parts:
+                uid = parts[0]
+                item_ids = parts[1:]
+                mapped = [item_map[item] for item in item_ids if item in item_map]
+                if mapped:
+                    user_seq_dict[uid] = mapped
 
-    
-    for user, items in user_seq_dict.items():
-        user_seq_dict[user] = [item_map[item] for item in items]
-
-    id_set = set()  # no duplication
+    id_set = set()
     user_id_dict = {}
-    id_count_dict = {}
-    count = 0
     max_dp = 0
 
-    for uid, text in tqdm.tqdm(user_seq_dict.items()):
-        text = " ".join(text)
+    for uid, mapped_items in tqdm.tqdm(user_seq_dict.items(), desc="Generating User IDs"):
+        text = ' '.join(mapped_items)
         found = False
         dp = 1.
         min_l = 1
-        while not found:  # keep trying until generating an uniq id
-            inputs = tokenizer([text], max_length=256, truncation=True, return_tensors="pt")
-            if hasattr(model_gen, "module"):
-                # Use the underlying module for generation
-                output = model_gen.module.generate(**inputs, num_beams=10, num_beam_groups=10, do_sample=False, min_length=min_l,
-                                                max_length=min_l + 10, diversity_penalty=dp, num_return_sequences=10)
-            else:
-                # Model is not wrapped with DDP, use it directly
-                output = model_gen.generate(**inputs, num_beams=10, num_beam_groups=10, do_sample=False, min_length=min_l,
-                                                max_length=min_l + 10, diversity_penalty=dp, num_return_sequences=10)
-            decoded_output = tokenizer.batch_decode(output, skip_special_tokens=True)
 
+        while not found:
+            inputs = tokenizer([text], max_length=256, truncation=True, return_tensors="pt").to(device)
+
+            generate_fn = model_gen.module.generate if hasattr(model_gen, "module") else model_gen.generate
+            outputs = generate_fn(
+                **inputs,
+                num_beams=10, num_beam_groups=10, do_sample=False,
+                min_length=min_l, max_length=min_l + 10,
+                diversity_penalty=dp, num_return_sequences=10
+            )
+
+            decoded_output = tokenizer.batch_decode(outputs, skip_special_tokens=True)
             for output in decoded_output:
                 tags = re.findall(r'\b\w+\b', output)
-                id = ' '.join(tags)
-                if id not in id_set:
+                gen_id = ' '.join(tags)
+                if gen_id not in id_set:
+                    id_set.add(gen_id)
+                    user_id_dict[uid] = gen_id
+                    max_dp = max(max_dp, dp)
                     found = True
-                    id_set.add(id)
-                    if dp > max_dp:
-                        max_dp = dp
-                    break  # if found a new id, use it
+                    break
+
             dp += 1
-            if dp >= 10:  # increase length
+            if dp >= 10:
                 min_l += 10
                 dp = 1.
-        user_id_dict[uid] = id
-
-    for key, value in user_seq_dict.items():
-        if key in user_id_dict:
-            user_seq_dict[key] = user_id_dict[key]
-        else:
-            raise ValueError(f"no user {key}")
 
     with open(user_index_file, "w") as f:
-        for key, value in user_seq_dict.items():
-            f.write(f"{key} {value}\n")
-    model_gen.to(device)
+        for uid, gen_id in user_id_dict.items():
+            f.write(f"{uid} {gen_id}\n")
+
     return True

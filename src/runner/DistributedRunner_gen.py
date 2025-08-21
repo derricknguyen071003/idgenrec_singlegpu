@@ -114,457 +114,457 @@ class DistributedRunner(SingleRunner):
         return optimizer_id, scheduler_id, optimizer_rec, scheduler_rec
     
     
-    def train_generator(self):
-        self.model_gen.zero_grad()
-        self.model_rec.zero_grad()
-        global_epoch = 0  # save the global training epoch, used for sampler
-        total_id_epoch = 0
-        train_losses = []
-        if self.test_before_train > 0:
-            self.test()
+    # def train_generator(self):
+    #     self.model_gen.zero_grad()
+    #     self.model_rec.zero_grad()
+    #     global_epoch = 0  # save the global training epoch, used for sampler
+    #     total_id_epoch = 0
+    #     train_losses = []
+    #     if self.test_before_train > 0:
+    #         self.test()
         
-        if self.args.alt_style == "id_first":
-            for alter in range(self.num_alternations):
-                # only train generator
-                if self.rank == 0:
-                    logging.info(f'Training ID Generator phase {alter+1}')
-                # fix rec model param
-                for param in self.model_rec.parameters():
-                    param.requires_grad = False
-                for param in self.model_gen.parameters():
-                    param.requires_grad = True
-                for id_epoch in range(self.args.id_epochs):
-                    if self.rank == 0:
-                        logging.info(f"Start training generator for phase {alter+1}, epoch {id_epoch+1}")
-                    dist.barrier()
-                    self.train_loader_id.sampler.set_epoch(global_epoch)
-                    # self.train_loader_rec.sampler.set_epoch(global_epoch)
-                    dist.barrier()
-                    self.model_gen.train()
-                    self.model_rec.train()
-                    losses = []  # loss for current eopch
-                    batch_count= 0
-                    for batch in tqdm(self.train_loader_id):
-                        input_prompt_ids = batch[0].to(self.device)
-                        input_prompt_positions = batch[1].to(self.device)
-                        hist_ids = batch[2].to(self.device)
-                        hist_att = batch[3].to(self.device)
-                        output_ids = batch[4].to(self.device)
-                        output_att = batch[5].to(self.device)
+    #     if self.args.alt_style == "id_first":
+    #         for alter in range(self.num_alternations):
+    #             # only train generator
+    #             if self.rank == 0:
+    #                 logging.info(f'Training ID Generator phase {alter+1}')
+    #             # fix rec model param
+    #             for param in self.model_rec.parameters():
+    #                 param.requires_grad = False
+    #             for param in self.model_gen.parameters():
+    #                 param.requires_grad = True
+    #             for id_epoch in range(self.args.id_epochs):
+    #                 if self.rank == 0:
+    #                     logging.info(f"Start training generator for phase {alter+1}, epoch {id_epoch+1}")
+    #                 dist.barrier()
+    #                 self.train_loader_id.sampler.set_epoch(global_epoch)
+    #                 # self.train_loader_rec.sampler.set_epoch(global_epoch)
+    #                 dist.barrier()
+    #                 self.model_gen.train()
+    #                 self.model_rec.train()
+    #                 losses = []  # loss for current eopch
+    #                 batch_count= 0
+    #                 for batch in tqdm(self.train_loader_id):
+    #                     input_prompt_ids = batch[0].to(self.device)
+    #                     input_prompt_positions = batch[1].to(self.device)
+    #                     hist_ids = batch[2].to(self.device)
+    #                     hist_att = batch[3].to(self.device)
+    #                     output_ids = batch[4].to(self.device)
+    #                     output_att = batch[5].to(self.device)
 
-                        batch_size = hist_ids.shape[0]
-                        hist_size = hist_ids.shape[1]
+    #                     batch_size = hist_ids.shape[0]
+    #                     hist_size = hist_ids.shape[1]
 
-                        input_tensor = hist_ids.view(-1, hist_ids.shape[-1])
+    #                     input_tensor = hist_ids.view(-1, hist_ids.shape[-1])
 
-                        output = self.model_gen.module.generate_with_grad(
-                            input_tensor,
-                            attention_mask=hist_att.view(-1, hist_att.shape[-1]),
-                            max_length=10,
-                            min_length=1,
-                            num_beams=1,
-                            return_dict_in_generate=True,
-                            output_scores=True,
-                            output_hidden_states=False,
-                            renormalize_logits=True,
-                            early_stopping=True,
-                        )
+    #                     output = self.model_gen.module.generate_with_grad(
+    #                         input_tensor,
+    #                         attention_mask=hist_att.view(-1, hist_att.shape[-1]),
+    #                         max_length=10,
+    #                         min_length=1,
+    #                         num_beams=1,
+    #                         return_dict_in_generate=True,
+    #                         output_scores=True,
+    #                         output_hidden_states=False,
+    #                         renormalize_logits=True,
+    #                         early_stopping=True,
+    #                     )
 
-                        probabilities = torch.cat([score.unsqueeze(1) for score in output['scores']], dim=1)
-                        train_id_token_size = probabilities.shape[1]
+    #                     probabilities = torch.cat([score.unsqueeze(1) for score in output['scores']], dim=1)
+    #                     train_id_token_size = probabilities.shape[1]
 
-                        token_embeddings = self.model_rec.module.shared.weight  # use rec models' embedding as input
-                        hist_embeddings = torch.einsum('bsv,ve->bse', probabilities, token_embeddings)
-                        hist_embeddings = hist_embeddings.view(batch_size, hist_size, train_id_token_size, -1)  # [bs, hist_size, id_token_size, xxx]
+    #                     token_embeddings = self.model_rec.module.shared.weight  # use rec models' embedding as input
+    #                     hist_embeddings = torch.einsum('bsv,ve->bse', probabilities, token_embeddings)
+    #                     hist_embeddings = hist_embeddings.view(batch_size, hist_size, train_id_token_size, -1)  # [bs, hist_size, id_token_size, xxx]
 
-                        # Remove punctuation embeddings
-                        temp_ids = output['sequences'][:, 1:]
+    #                     # Remove punctuation embeddings
+    #                     temp_ids = output['sequences'][:, 1:]
 
-                        punctuation_tokens = [self.tokenizer.encode(p, add_special_tokens=False)[0] for p in string.punctuation]
+    #                     punctuation_tokens = [self.tokenizer.encode(p, add_special_tokens=False)[0] for p in string.punctuation]
 
-                        punctuation_tokens_tensor = torch.tensor(punctuation_tokens).to(self.device)
-                        punctuation_mask = torch.isin(temp_ids, punctuation_tokens_tensor)
-                        # reshape
-                        batch_size_, hist_size_, seq_length_minus_one_, embedding_dim_ = hist_embeddings.shape
-                        punctuation_mask = punctuation_mask.view(batch_size_, hist_size_, seq_length_minus_one_)
+    #                     punctuation_tokens_tensor = torch.tensor(punctuation_tokens).to(self.device)
+    #                     punctuation_mask = torch.isin(temp_ids, punctuation_tokens_tensor)
+    #                     # reshape
+    #                     batch_size_, hist_size_, seq_length_minus_one_, embedding_dim_ = hist_embeddings.shape
+    #                     punctuation_mask = punctuation_mask.view(batch_size_, hist_size_, seq_length_minus_one_)
 
-                        hist_embeddings[punctuation_mask.unsqueeze(-1).expand_as(hist_embeddings)] = 0
+    #                     hist_embeddings[punctuation_mask.unsqueeze(-1).expand_as(hist_embeddings)] = 0
 
-                        input_prompt_embeddings = token_embeddings[input_prompt_ids]
+    #                     input_prompt_embeddings = token_embeddings[input_prompt_ids]
 
-                        # calculate the max sequence size
-                        max_prompt_size = input_prompt_embeddings.shape[1]
-                        max_hist_num = hist_ids.shape[1]
-                        max_input_len = max_prompt_size + max_hist_num * train_id_token_size
-                        final_input = self.insert_phrases_batch(input_prompt_embeddings, 
-                                                            input_prompt_positions, 
-                                                            hist_embeddings, 
-                                                            max_input_len)
+    #                     # calculate the max sequence size
+    #                     max_prompt_size = input_prompt_embeddings.shape[1]
+    #                     max_hist_num = hist_ids.shape[1]
+    #                     max_input_len = max_prompt_size + max_hist_num * train_id_token_size
+    #                     final_input = self.insert_phrases_batch(input_prompt_embeddings, 
+    #                                                         input_prompt_positions, 
+    #                                                         hist_embeddings, 
+    #                                                         max_input_len)
     
-                        norms = torch.norm(final_input, dim=-1)
-                        attention_mask = (norms > 1e-6).long()
+    #                     norms = torch.norm(final_input, dim=-1)
+    #                     attention_mask = (norms > 1e-6).long()
 
-                        output = self.model_rec.module(
-                            inputs_embeds=final_input,
-                            attention_mask=attention_mask,
-                            labels=output_ids,
-                            return_dict=True,
-                        )
+    #                     output = self.model_rec.module(
+    #                         inputs_embeds=final_input,
+    #                         attention_mask=attention_mask,
+    #                         labels=output_ids,
+    #                         return_dict=True,
+    #                     )
 
-                        # compute loss masking padded tokens
-                        loss = output["loss"]
+    #                     # compute loss masking padded tokens
+    #                     loss = output["loss"]
 
-                        # update
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(self.model_gen.parameters(), self.args.clip)
+    #                     # update
+    #                     loss.backward()
+    #                     torch.nn.utils.clip_grad_norm_(self.model_gen.parameters(), self.args.clip)
 
-                        dist.barrier()
+    #                     dist.barrier()
                         
-                        self.id_optimizer.step()
-                        self.id_scheduler.step()
-                        self.model_gen.zero_grad()
-                        self.model_rec.zero_grad()
+    #                     self.id_optimizer.step()
+    #                     self.id_scheduler.step()
+    #                     self.model_gen.zero_grad()
+    #                     self.model_rec.zero_grad()
                         
-                        dist.all_reduce(loss.detach(), op=dist.ReduceOp.SUM)
-                        loss /= dist.get_world_size()
+    #                     dist.all_reduce(loss.detach(), op=dist.ReduceOp.SUM)
+    #                     loss /= dist.get_world_size()
                         
-                        dist.barrier()
-                        if self.rank == 0:
-                            losses.append(loss.detach())
-                        batch_count += 1 
+    #                     dist.barrier()
+    #                     if self.rank == 0:
+    #                         losses.append(loss.detach())
+    #                     batch_count += 1 
 
-                    # save model
-                    if self.rank == 0:
-                        cur_path = os.path.join(self.args.model_path, f"model_gen_phase_{alter+1}_epoch_{id_epoch+1}.pt")
-                        torch.save(self.model_gen.module.state_dict(), cur_path)
-                        logging.info(f"Save the current ID model to {cur_path}")
+    #                 # save model
+    #                 if self.rank == 0:
+    #                     cur_path = os.path.join(self.args.model_path, f"model_gen_phase_{alter+1}_epoch_{id_epoch+1}.pt")
+    #                     torch.save(self.model_gen.module.state_dict(), cur_path)
+    #                     logging.info(f"Save the current ID model to {cur_path}")
 
-                    if self.rank == 0:
-                        train_epoch_loss = sum(losses)/len(losses)
-                        train_losses.append(train_epoch_loss)
-                        logging.info(f"The average training loss for id phase {alter+1} epoch {id_epoch+1} is {train_epoch_loss}")
+    #                 if self.rank == 0:
+    #                     train_epoch_loss = sum(losses)/len(losses)
+    #                     train_losses.append(train_epoch_loss)
+    #                     logging.info(f"The average training loss for id phase {alter+1} epoch {id_epoch+1} is {train_epoch_loss}")
 
-                    global_epoch += 1
-                    total_id_epoch += 1
+    #                 global_epoch += 1
+    #                 total_id_epoch += 1
 
-                    if self.args.test_epoch_id > 0:
-                        if (id_epoch + 1) % self.args.test_epoch_id == 0:
-                            self.model_gen.eval()
-                            self.model_rec.eval()
-                            self.get_testloader(model_gen=self.model_gen, tokenizer=self.tokenizer, regenerate=True, phase=total_id_epoch)
-                            self.test()
-                # only train recommender
-                if self.rank == 0:
-                    logging.info(f'Training Recommender phase {alter+1}')
-                # regenerate rec train loader
-                TrainSetID, TrainSetRec, ValidSet = get_dataset_generative(self.args, self.model_gen, self.tokenizer, total_id_epoch, regenerate=False)
-                train_loader_id, self.train_loader_rec, valid_loader = get_loader(self.args, self.tokenizer, TrainSetID, TrainSetRec, ValidSet, self.rank)
+    #                 if self.args.test_epoch_id > 0:
+    #                     if (id_epoch + 1) % self.args.test_epoch_id == 0:
+    #                         self.model_gen.eval()
+    #                         self.model_rec.eval()
+    #                         self.get_testloader(model_gen=self.model_gen, tokenizer=self.tokenizer, regenerate=True, phase=total_id_epoch)
+    #                         self.test()
+    #             # only train recommender
+    #             if self.rank == 0:
+    #                 logging.info(f'Training Recommender phase {alter+1}')
+    #             # regenerate rec train loader
+    #             TrainSetID, TrainSetRec, ValidSet = get_dataset_generative(self.args, self.model_gen, self.tokenizer, total_id_epoch, regenerate=False)
+    #             train_loader_id, self.train_loader_rec, valid_loader = get_loader(self.args, self.tokenizer, TrainSetID, TrainSetRec, ValidSet, self.rank)
 
-                # fix generator model param
-                for param in self.model_rec.parameters():
-                    param.requires_grad = True
-                for param in self.model_gen.parameters():
-                    param.requires_grad = False
-                # only train generator
-                for rec_epoch in range(self.args.rec_epochs):
-                    self.model_gen.train()
-                    self.model_rec.train()
-                    if self.rank == 0:
-                        logging.info(f"Start training recommender for phase {alter+1}, epoch {rec_epoch+1}")
-                    dist.barrier()
+    #             # fix generator model param
+    #             for param in self.model_rec.parameters():
+    #                 param.requires_grad = True
+    #             for param in self.model_gen.parameters():
+    #                 param.requires_grad = False
+    #             # only train generator
+    #             for rec_epoch in range(self.args.rec_epochs):
+    #                 self.model_gen.train()
+    #                 self.model_rec.train()
+    #                 if self.rank == 0:
+    #                     logging.info(f"Start training recommender for phase {alter+1}, epoch {rec_epoch+1}")
+    #                 dist.barrier()
 
-                    if self.regenerate_candidate:
-                        for ds in self.train_loader.dataset.datasets:
-                            ds.generate_candidates()
-                            ds.construct_sentence()
-                    elif self.reconstruct_data:
-                        for ds in self.train_loader.dataset.datasets:
-                            ds.construct_sentence()
+    #                 if self.regenerate_candidate:
+    #                     for ds in self.train_loader.dataset.datasets:
+    #                         ds.generate_candidates()
+    #                         ds.construct_sentence()
+    #                 elif self.reconstruct_data:
+    #                     for ds in self.train_loader.dataset.datasets:
+    #                         ds.construct_sentence()
 
 
-                    self.train_loader_rec.sampler.set_epoch(global_epoch)
-                    # self.train_loader_rec.sampler.set_epoch(global_epoch)
-                    dist.barrier()
-                    losses = []
-                    for batch in tqdm(self.train_loader_rec):
-                        input_ids = batch[0].to(self.device)
-                        attn = batch[1].to(self.device)
-                        whole_input_ids = batch[2].to(self.device)  # remove
-                        output_ids = batch[3].to(self.device)
-                        output_attention = batch[4].to(self.device)
+    #                 self.train_loader_rec.sampler.set_epoch(global_epoch)
+    #                 # self.train_loader_rec.sampler.set_epoch(global_epoch)
+    #                 dist.barrier()
+    #                 losses = []
+    #                 for batch in tqdm(self.train_loader_rec):
+    #                     input_ids = batch[0].to(self.device)
+    #                     attn = batch[1].to(self.device)
+    #                     whole_input_ids = batch[2].to(self.device)  # remove
+    #                     output_ids = batch[3].to(self.device)
+    #                     output_attention = batch[4].to(self.device)
 
-                        output = self.model_rec.module(
-                            input_ids=input_ids,
-                            attention_mask=attn,
-                            labels=output_ids,
-                            return_dict=True,
-                        )
+    #                     output = self.model_rec.module(
+    #                         input_ids=input_ids,
+    #                         attention_mask=attn,
+    #                         labels=output_ids,
+    #                         return_dict=True,
+    #                     )
 
-                        # compute loss masking padded tokens
-                        loss = output["loss"]
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(self.model_rec.parameters(), self.args.clip)
+    #                     # compute loss masking padded tokens
+    #                     loss = output["loss"]
+    #                     loss.backward()
+    #                     torch.nn.utils.clip_grad_norm_(self.model_rec.parameters(), self.args.clip)
 
-                        dist.barrier()
-                        self.rec_optimizer.step()
-                        self.rec_scheduler.step()
-                        self.model_gen.zero_grad()
-                        self.model_rec.zero_grad()
+    #                     dist.barrier()
+    #                     self.rec_optimizer.step()
+    #                     self.rec_scheduler.step()
+    #                     self.model_gen.zero_grad()
+    #                     self.model_rec.zero_grad()
                         
-                        dist.all_reduce(loss.detach(), op=dist.ReduceOp.SUM)
-                        loss /= dist.get_world_size()
+    #                     dist.all_reduce(loss.detach(), op=dist.ReduceOp.SUM)
+    #                     loss /= dist.get_world_size()
                         
-                        dist.barrier()
+    #                     dist.barrier()
                         
-                        if self.rank == 0:
-                            losses.append(loss.detach())
+    #                     if self.rank == 0:
+    #                         losses.append(loss.detach())
 
-                    learning_rate = self.rec_optimizer.param_groups[0]['lr']
+    #                 learning_rate = self.rec_optimizer.param_groups[0]['lr']
 
-                    # save model
-                    if self.rank == 0 and (rec_epoch+1) % 10 == 0:
-                        cur_path = os.path.join(self.args.model_path, f"model_rec_phase_{alter+1}_epoch_{rec_epoch+1}.pt")
-                        torch.save(self.model_rec.module.state_dict(), cur_path)
-                        logging.info(f"Save the current rec model to {cur_path}")
+    #                 # save model
+    #                 if self.rank == 0 and (rec_epoch+1) % 10 == 0:
+    #                     cur_path = os.path.join(self.args.model_path, f"model_rec_phase_{alter+1}_epoch_{rec_epoch+1}.pt")
+    #                     torch.save(self.model_rec.module.state_dict(), cur_path)
+    #                     logging.info(f"Save the current rec model to {cur_path}")
 
-                    if self.rank == 0:
-                        train_epoch_loss = sum(losses)/len(losses)
-                        train_losses.append(train_epoch_loss)
-                        logging.info(f"The average training loss for rec phase {alter+1} epoch {rec_epoch+1} is {train_epoch_loss}")
+    #                 if self.rank == 0:
+    #                     train_epoch_loss = sum(losses)/len(losses)
+    #                     train_losses.append(train_epoch_loss)
+    #                     logging.info(f"The average training loss for rec phase {alter+1} epoch {rec_epoch+1} is {train_epoch_loss}")
 
-                    if self.args.test_epoch_rec > 0:
-                        if (rec_epoch + 1) % self.args.test_epoch_rec == 0:
-                            self.model_gen.eval()
-                            self.model_rec.eval()
-                            # regenerate text sampler
-                            self.get_testloader(model_gen=self.model_gen, tokenizer=self.tokenizer, regenerate=False, phase=total_id_epoch)
-                            self.test()
-                    global_epoch += 1
+    #                 if self.args.test_epoch_rec > 0:
+    #                     if (rec_epoch + 1) % self.args.test_epoch_rec == 0:
+    #                         self.model_gen.eval()
+    #                         self.model_rec.eval()
+    #                         # regenerate text sampler
+    #                         self.get_testloader(model_gen=self.model_gen, tokenizer=self.tokenizer, regenerate=False, phase=total_id_epoch)
+    #                         self.test()
+    #                 global_epoch += 1
 
-        elif self.args.alt_style == "rec_first":
-            for alter in range(self.num_alternations):
-                # only train recommender
-                if self.rank == 0:
-                    logging.info(f'Training Recommender phase {alter+1}')
-                # regenerate rec train loader
-                TrainSetID, TrainSetRec, ValidSet = get_dataset_generative(self.args, self.model_gen, self.tokenizer, total_id_epoch, regenerate=False)
-                train_loader_id, self.train_loader_rec, valid_loader = get_loader(self.args, self.tokenizer, TrainSetID, TrainSetRec, ValidSet, self.rank)
+    #     elif self.args.alt_style == "rec_first":
+    #         for alter in range(self.num_alternations):
+    #             # only train recommender
+    #             if self.rank == 0:
+    #                 logging.info(f'Training Recommender phase {alter+1}')
+    #             # regenerate rec train loader
+    #             TrainSetID, TrainSetRec, ValidSet = get_dataset_generative(self.args, self.model_gen, self.tokenizer, total_id_epoch, regenerate=False)
+    #             train_loader_id, self.train_loader_rec, valid_loader = get_loader(self.args, self.tokenizer, TrainSetID, TrainSetRec, ValidSet, self.rank)
 
-                # fix generator model param
-                for param in self.model_rec.parameters():
-                    param.requires_grad = True
-                for param in self.model_gen.parameters():
-                    param.requires_grad = False
+    #             # fix generator model param
+    #             for param in self.model_rec.parameters():
+    #                 param.requires_grad = True
+    #             for param in self.model_gen.parameters():
+    #                 param.requires_grad = False
 
-                for rec_epoch in range(self.args.rec_epochs):
-                    self.model_gen.train()
-                    self.model_rec.train()
-                    if self.rank == 0:
-                        logging.info(f"Start training recommender for phase {alter+1}, epoch {rec_epoch+1}")
-                    dist.barrier()
+    #             for rec_epoch in range(self.args.rec_epochs):
+    #                 self.model_gen.train()
+    #                 self.model_rec.train()
+    #                 if self.rank == 0:
+    #                     logging.info(f"Start training recommender for phase {alter+1}, epoch {rec_epoch+1}")
+    #                 dist.barrier()
 
-                    if self.regenerate_candidate:
-                        for ds in self.train_loader.dataset.datasets:
-                            ds.generate_candidates()
-                            ds.construct_sentence()
-                    elif self.reconstruct_data:
-                        for ds in self.train_loader.dataset.datasets:
-                            ds.construct_sentence()
+    #                 if self.regenerate_candidate:
+    #                     for ds in self.train_loader.dataset.datasets:
+    #                         ds.generate_candidates()
+    #                         ds.construct_sentence()
+    #                 elif self.reconstruct_data:
+    #                     for ds in self.train_loader.dataset.datasets:
+    #                         ds.construct_sentence()
 
-                    self.train_loader_rec.sampler.set_epoch(global_epoch)
-                    # self.train_loader_rec.sampler.set_epoch(global_epoch)
-                    dist.barrier()
-                    losses = []  # loss for current eopch
-                    for batch in tqdm(self.train_loader_rec):
-                        input_ids = batch[0].to(self.device)
-                        attn = batch[1].to(self.device)
-                        whole_input_ids = batch[2].to(self.device)  # remove
-                        output_ids = batch[3].to(self.device)
-                        output_attention = batch[4].to(self.device)
+    #                 self.train_loader_rec.sampler.set_epoch(global_epoch)
+    #                 # self.train_loader_rec.sampler.set_epoch(global_epoch)
+    #                 dist.barrier()
+    #                 losses = []  # loss for current eopch
+    #                 for batch in tqdm(self.train_loader_rec):
+    #                     input_ids = batch[0].to(self.device)
+    #                     attn = batch[1].to(self.device)
+    #                     whole_input_ids = batch[2].to(self.device)  # remove
+    #                     output_ids = batch[3].to(self.device)
+    #                     output_attention = batch[4].to(self.device)
 
-                        output = self.model_rec.module(
-                            input_ids=input_ids,
-                            attention_mask=attn,
-                            labels=output_ids,
-                            return_dict=True,
-                        )
+    #                     output = self.model_rec.module(
+    #                         input_ids=input_ids,
+    #                         attention_mask=attn,
+    #                         labels=output_ids,
+    #                         return_dict=True,
+    #                     )
 
-                        loss = output["loss"]
-                        # update
-                        loss.backward()
+    #                     loss = output["loss"]
+    #                     # update
+    #                     loss.backward()
 
-                        torch.nn.utils.clip_grad_norm_(self.model_rec.parameters(), self.args.clip)
+    #                     torch.nn.utils.clip_grad_norm_(self.model_rec.parameters(), self.args.clip)
 
-                        dist.barrier()
-                        self.rec_optimizer.step()
-                        self.rec_scheduler.step()
-                        self.model_gen.zero_grad()
-                        self.model_rec.zero_grad()
+    #                     dist.barrier()
+    #                     self.rec_optimizer.step()
+    #                     self.rec_scheduler.step()
+    #                     self.model_gen.zero_grad()
+    #                     self.model_rec.zero_grad()
                         
-                        dist.all_reduce(loss.detach(), op=dist.ReduceOp.SUM)
-                        loss /= dist.get_world_size()
+    #                     dist.all_reduce(loss.detach(), op=dist.ReduceOp.SUM)
+    #                     loss /= dist.get_world_size()
                         
-                        dist.barrier()
+    #                     dist.barrier()
                         
-                        if self.rank == 0:
-                            losses.append(loss.detach())
+    #                     if self.rank == 0:
+    #                         losses.append(loss.detach())
 
-                    learning_rate = self.rec_optimizer.param_groups[0]['lr']
+    #                 learning_rate = self.rec_optimizer.param_groups[0]['lr']
 
-                    # save model
-                    if self.rank == 0 and (rec_epoch+1) % 10 == 0:
-                        cur_path = os.path.join(self.args.model_path, f"model_rec_phase_{alter+1}_epoch_{rec_epoch+1}.pt")
-                        torch.save(self.model_rec.module.state_dict(), cur_path)
-                        logging.info(f"Save the current rec model to {cur_path}")
+    #                 # save model
+    #                 if self.rank == 0 and (rec_epoch+1) % 10 == 0:
+    #                     cur_path = os.path.join(self.args.model_path, f"model_rec_phase_{alter+1}_epoch_{rec_epoch+1}.pt")
+    #                     torch.save(self.model_rec.module.state_dict(), cur_path)
+    #                     logging.info(f"Save the current rec model to {cur_path}")
 
-                    if self.rank == 0:
-                        train_epoch_loss = sum(losses)/len(losses)
-                        train_losses.append(train_epoch_loss)
-                        logging.info(f"The average training loss for rec phase {alter+1} epoch {rec_epoch+1} is {train_epoch_loss}")
+    #                 if self.rank == 0:
+    #                     train_epoch_loss = sum(losses)/len(losses)
+    #                     train_losses.append(train_epoch_loss)
+    #                     logging.info(f"The average training loss for rec phase {alter+1} epoch {rec_epoch+1} is {train_epoch_loss}")
 
-                    if self.args.test_epoch_rec > 0:
-                        if (rec_epoch + 1) % self.args.test_epoch_rec == 0:
-                            self.model_gen.eval()
-                            self.model_rec.eval()
-                            # regenerate text sampler
-                            self.get_testloader(model_gen=self.model_gen, tokenizer=self.tokenizer, regenerate=False, phase=total_id_epoch)
-                            self.test()
-                    global_epoch += 1
+    #                 if self.args.test_epoch_rec > 0:
+    #                     if (rec_epoch + 1) % self.args.test_epoch_rec == 0:
+    #                         self.model_gen.eval()
+    #                         self.model_rec.eval()
+    #                         # regenerate text sampler
+    #                         self.get_testloader(model_gen=self.model_gen, tokenizer=self.tokenizer, regenerate=False, phase=total_id_epoch)
+    #                         self.test()
+    #                 global_epoch += 1
 
-                if self.rank == 0:
-                    logging.info(f'Training ID Generator phase {alter+1}')
-                # fix rec model param
-                for param in self.model_rec.parameters():
-                    param.requires_grad = False
-                for param in self.model_gen.parameters():
-                    param.requires_grad = True
-                for id_epoch in range(self.args.id_epochs):
-                    if self.rank == 0:
-                        logging.info(f"Start training generator for phase {alter+1}, epoch {id_epoch+1}")
-                    dist.barrier()
-                    self.train_loader_id.sampler.set_epoch(global_epoch)
-                    # self.train_loader_rec.sampler.set_epoch(global_epoch)
-                    dist.barrier()
-                    self.model_gen.train()
-                    self.model_rec.train()
+    #             if self.rank == 0:
+    #                 logging.info(f'Training ID Generator phase {alter+1}')
+    #             # fix rec model param
+    #             for param in self.model_rec.parameters():
+    #                 param.requires_grad = False
+    #             for param in self.model_gen.parameters():
+    #                 param.requires_grad = True
+    #             for id_epoch in range(self.args.id_epochs):
+    #                 if self.rank == 0:
+    #                     logging.info(f"Start training generator for phase {alter+1}, epoch {id_epoch+1}")
+    #                 dist.barrier()
+    #                 self.train_loader_id.sampler.set_epoch(global_epoch)
+    #                 # self.train_loader_rec.sampler.set_epoch(global_epoch)
+    #                 dist.barrier()
+    #                 self.model_gen.train()
+    #                 self.model_rec.train()
 
-                    losses = []  # loss for current eopch
-                    batch_count= 0
-                    for batch in tqdm(self.train_loader_id):
-                        input_prompt_ids = batch[0].to(self.device)
-                        input_prompt_positions = batch[1].to(self.device)
-                        hist_ids = batch[2].to(self.device)
-                        hist_att = batch[3].to(self.device)
-                        output_ids = batch[4].to(self.device)
-                        output_att = batch[5].to(self.device)
+    #                 losses = []  # loss for current eopch
+    #                 batch_count= 0
+    #                 for batch in tqdm(self.train_loader_id):
+    #                     input_prompt_ids = batch[0].to(self.device)
+    #                     input_prompt_positions = batch[1].to(self.device)
+    #                     hist_ids = batch[2].to(self.device)
+    #                     hist_att = batch[3].to(self.device)
+    #                     output_ids = batch[4].to(self.device)
+    #                     output_att = batch[5].to(self.device)
 
-                        batch_size = hist_ids.shape[0]
-                        hist_size = hist_ids.shape[1]
+    #                     batch_size = hist_ids.shape[0]
+    #                     hist_size = hist_ids.shape[1]
 
-                        input_tensor = hist_ids.view(-1, hist_ids.shape[-1])
+    #                     input_tensor = hist_ids.view(-1, hist_ids.shape[-1])
 
-                        # generated_ids = self.model_gen.module.generate_with_grad(input_tensor, attention_mask=hist_att.view(-1, hist_att.shape[-1]), )
-                        output = self.model_gen.module.generate_with_grad(
-                            input_tensor,
-                            attention_mask=hist_att.view(-1, hist_att.shape[-1]),
-                            max_length=10,
-                            min_length=1,
-                            num_beams=1,
-                            return_dict_in_generate=True,
-                            output_scores=True,
-                            output_hidden_states=False,
-                            renormalize_logits=True,
-                            early_stopping=True
-                        )
+    #                     # generated_ids = self.model_gen.module.generate_with_grad(input_tensor, attention_mask=hist_att.view(-1, hist_att.shape[-1]), )
+    #                     output = self.model_gen.module.generate_with_grad(
+    #                         input_tensor,
+    #                         attention_mask=hist_att.view(-1, hist_att.shape[-1]),
+    #                         max_length=10,
+    #                         min_length=1,
+    #                         num_beams=1,
+    #                         return_dict_in_generate=True,
+    #                         output_scores=True,
+    #                         output_hidden_states=False,
+    #                         renormalize_logits=True,
+    #                         early_stopping=True
+    #                     )
 
-                        probabilities = torch.cat([score.unsqueeze(1) for score in output['scores']], dim=1)
-                        train_id_token_size = probabilities.shape[1]
+    #                     probabilities = torch.cat([score.unsqueeze(1) for score in output['scores']], dim=1)
+    #                     train_id_token_size = probabilities.shape[1]
 
 
-                        token_embeddings = self.model_rec.module.shared.weight  # use rec models' embedding as input
-                        hist_embeddings = torch.einsum('bsv,ve->bse', probabilities, token_embeddings)
-                        hist_embeddings = hist_embeddings.view(batch_size, hist_size, train_id_token_size, -1)  # [bs, hist_size, id_token_size, xxx]
+    #                     token_embeddings = self.model_rec.module.shared.weight  # use rec models' embedding as input
+    #                     hist_embeddings = torch.einsum('bsv,ve->bse', probabilities, token_embeddings)
+    #                     hist_embeddings = hist_embeddings.view(batch_size, hist_size, train_id_token_size, -1)  # [bs, hist_size, id_token_size, xxx]
 
-                        # Remove punctuation embeddings
-                        temp_ids = output['sequences'][:, 1:]
+    #                     # Remove punctuation embeddings
+    #                     temp_ids = output['sequences'][:, 1:]
 
-                        punctuation_tokens = [self.tokenizer.encode(p, add_special_tokens=False)[0] for p in string.punctuation]
+    #                     punctuation_tokens = [self.tokenizer.encode(p, add_special_tokens=False)[0] for p in string.punctuation]
 
-                        punctuation_tokens_tensor = torch.tensor(punctuation_tokens).to(self.device)
-                        punctuation_mask = torch.isin(temp_ids, punctuation_tokens_tensor)
-                        # reshaoe
-                        batch_size_, hist_size_, seq_length_minus_one_, embedding_dim_ = hist_embeddings.shape
-                        punctuation_mask = punctuation_mask.view(batch_size_, hist_size_, seq_length_minus_one_)
+    #                     punctuation_tokens_tensor = torch.tensor(punctuation_tokens).to(self.device)
+    #                     punctuation_mask = torch.isin(temp_ids, punctuation_tokens_tensor)
+    #                     # reshaoe
+    #                     batch_size_, hist_size_, seq_length_minus_one_, embedding_dim_ = hist_embeddings.shape
+    #                     punctuation_mask = punctuation_mask.view(batch_size_, hist_size_, seq_length_minus_one_)
 
-                        hist_embeddings[punctuation_mask.unsqueeze(-1).expand_as(hist_embeddings)] = 0
+    #                     hist_embeddings[punctuation_mask.unsqueeze(-1).expand_as(hist_embeddings)] = 0
 
-                        input_prompt_embeddings = token_embeddings[input_prompt_ids]
+    #                     input_prompt_embeddings = token_embeddings[input_prompt_ids]
 
-                        # calculate the max sequence size
-                        max_prompt_size = input_prompt_embeddings.shape[1]
-                        max_hist_num = hist_ids.shape[1]
-                        max_input_len = max_prompt_size + max_hist_num * train_id_token_size
-                        final_input = self.insert_phrases_batch(input_prompt_embeddings, 
-                                                            input_prompt_positions, 
-                                                            hist_embeddings, 
-                                                            max_input_len)
+    #                     # calculate the max sequence size
+    #                     max_prompt_size = input_prompt_embeddings.shape[1]
+    #                     max_hist_num = hist_ids.shape[1]
+    #                     max_input_len = max_prompt_size + max_hist_num * train_id_token_size
+    #                     final_input = self.insert_phrases_batch(input_prompt_embeddings, 
+    #                                                         input_prompt_positions, 
+    #                                                         hist_embeddings, 
+    #                                                         max_input_len)
     
-                        norms = torch.norm(final_input, dim=-1)
-                        attention_mask = (norms > 1e-6).long()
+    #                     norms = torch.norm(final_input, dim=-1)
+    #                     attention_mask = (norms > 1e-6).long()
 
-                        output = self.model_rec.module(
-                            inputs_embeds=final_input,
-                            attention_mask=attention_mask,
-                            labels=output_ids,
-                            return_dict=True,
-                        )
+    #                     output = self.model_rec.module(
+    #                         inputs_embeds=final_input,
+    #                         attention_mask=attention_mask,
+    #                         labels=output_ids,
+    #                         return_dict=True,
+    #                     )
 
-                        loss = output["loss"]
+    #                     loss = output["loss"]
 
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(self.model_gen.parameters(), self.args.clip)
+    #                     loss.backward()
+    #                     torch.nn.utils.clip_grad_norm_(self.model_gen.parameters(), self.args.clip)
 
-                        dist.barrier()
+    #                     dist.barrier()
                         
-                        self.id_optimizer.step()
-                        self.id_scheduler.step()
-                        self.model_gen.zero_grad()
-                        self.model_rec.zero_grad()
+    #                     self.id_optimizer.step()
+    #                     self.id_scheduler.step()
+    #                     self.model_gen.zero_grad()
+    #                     self.model_rec.zero_grad()
                         
-                        dist.all_reduce(loss.detach(), op=dist.ReduceOp.SUM)
-                        loss /= dist.get_world_size()
+    #                     dist.all_reduce(loss.detach(), op=dist.ReduceOp.SUM)
+    #                     loss /= dist.get_world_size()
                         
-                        dist.barrier()
-                        if self.rank == 0:
-                            losses.append(loss.detach())
-                        batch_count += 1 
+    #                     dist.barrier()
+    #                     if self.rank == 0:
+    #                         losses.append(loss.detach())
+    #                     batch_count += 1 
 
 
-                    # save model
-                    if self.rank == 0:
-                        cur_path = os.path.join(self.args.model_path, f"model_gen_phase_{alter+1}_epoch_{id_epoch+1}.pt")
-                        torch.save(self.model_gen.module.state_dict(), cur_path)
-                        logging.info(f"Save the current ID model to {cur_path}")
+    #                 # save model
+    #                 if self.rank == 0:
+    #                     cur_path = os.path.join(self.args.model_path, f"model_gen_phase_{alter+1}_epoch_{id_epoch+1}.pt")
+    #                     torch.save(self.model_gen.module.state_dict(), cur_path)
+    #                     logging.info(f"Save the current ID model to {cur_path}")
 
-                    if self.rank == 0:
-                        train_epoch_loss = sum(losses)/len(losses)
-                        train_losses.append(train_epoch_loss)
-                        logging.info(f"The average training loss for id phase {alter+1} epoch {id_epoch+1} is {train_epoch_loss}")
+    #                 if self.rank == 0:
+    #                     train_epoch_loss = sum(losses)/len(losses)
+    #                     train_losses.append(train_epoch_loss)
+    #                     logging.info(f"The average training loss for id phase {alter+1} epoch {id_epoch+1} is {train_epoch_loss}")
 
-                    global_epoch += 1
-                    total_id_epoch += 1
+    #                 global_epoch += 1
+    #                 total_id_epoch += 1
 
-                    if self.args.test_epoch_id > 0:
-                        if (global_epoch + 1) % self.args.test_epoch_id == 0:
-                            self.model_gen.eval()
-                            self.model_rec.eval()
-                            self.get_testloader(model_gen=self.model_gen, tokenizer=self.tokenizer, regenerate=True, phase=total_id_epoch)
-                            self.test()
+    #                 if self.args.test_epoch_id > 0:
+    #                     if (global_epoch + 1) % self.args.test_epoch_id == 0:
+    #                         self.model_gen.eval()
+    #                         self.model_rec.eval()
+    #                         self.get_testloader(model_gen=self.model_gen, tokenizer=self.tokenizer, regenerate=True, phase=total_id_epoch)
+    #                         self.test()
             
-        else:
-            raise NotImplementedError
-        return True
-
+    #     else:
+    #         raise NotImplementedError
+    #     return True
+    
     
     def get_testloader(self, model_gen=None, tokenizer=None, regenerate=False, phase=0):
         self.testloaders = []
@@ -572,8 +572,10 @@ class DistributedRunner(SingleRunner):
         tasks = self.args.tasks.split(',')
         if self.test_filtered > 0:
             collator = TestCollator(self.tokenizer)
+            logging.info('Using TestCollator for filtered testing')
         else:
             collator = Collator(self.tokenizer)
+            logging.info('Using Collator for testing')
         for dataset in datasets:
             for task in tasks:
                 try:

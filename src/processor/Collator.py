@@ -158,4 +158,3 @@ def calculate_whole_word_ids(tokenized_text, input_ids):
         else:
             whole_word_ids.append(curr)
     return whole_word_ids[: len(input_ids) - 1] + [0]  # [0] for </s>
-

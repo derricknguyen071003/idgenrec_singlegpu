@@ -1,26 +1,24 @@
-python ../src/main_generative.py --datasets Fusion \
-  --distributed 1 \
-  --gpu 0,1,2,3 \
+python main_generative.py --datasets Beauty \
+  --gpu 0 \
   --tasks sequential \
   --item_indexing generative \
-  --rounds 1\
+  --rounds 3 \
   --id_batch_size 12 \
   --rec_batch_size 64 \
-  --master_port 1994 \
   --prompt_file ../prompt.txt \
   --sample_prompt 1 \
   --eval_batch_size 1 \
   --dist_sampler 0 \
-  --max_his 20  \
+  --max_his 20 \
   --sample_num 3 \
   --train 1 \
   --test_prompt seen:0 \
   --rec_lr 1e-3 \
   --id_lr 1e-8 \
   --test_epoch_id 1 \
-  --test_epoch_rec 1 \
+  --test_epoch_rec 10 \
   --his_prefix 0 \
   --random_initialize 0 \
   --id_epochs 1 \
-  --rec_epochs 1 \
-  --alt_style id_first 
+  --rec_epochs 10 \
+  --alt_style id_first

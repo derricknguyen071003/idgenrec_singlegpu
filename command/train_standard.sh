@@ -1,12 +1,11 @@
 python ../src/main_generative.py --datasets Beauty \
-  --distributed 1 \
-  --gpu 0,1,2,3 \
+  --distributed 0 \
+  --gpu 0 \
   --tasks sequential \
   --item_indexing generative \
   --rounds 3\
   --id_batch_size 12 \
   --rec_batch_size 64 \
-  --master_port 1993 \
   --prompt_file ../prompt.txt \
   --sample_prompt 1 \
   --eval_batch_size 1 \

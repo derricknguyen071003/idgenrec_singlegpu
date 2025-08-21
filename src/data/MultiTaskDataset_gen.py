@@ -67,31 +67,31 @@ class MultiTaskDatasetGen(Dataset):
         self.prefix = args.his_prefix
         self.skip_empty_his = args.skip_empty_his
         
-        if self.rank == 0:
-            logging.info(f"Generating data for {self.dataset} dataset")
+        # if self.rank == 0:
+        # #    logging.info(f"GEN DATA PREPARATION")
+        #     logging.info(f"Generating GEN data for {self.dataset} dataset ")
 
         # load and check prompt
-        if self.rank == 0:
-            logging.info(f"Get prompt template from {args.prompt_file}")
+        #if self.rank == 0:
+        #    logging.info(f"Get prompt template from {args.prompt_file}")
         self.prompt = load_prompt_template(args.prompt_file, self.tasks)
-
-        if self.rank == 0 and 'sequential' in self.prompt:  # changed JT
-            logging.info(f"{self.prompt['sequential']['seen']['0']['Input']}")
+        logging.info("--" * 45)
+        #logging.info("Prompt information")
+        #if self.rank == 0 and 'sequential' in self.prompt:  # changed JT
+        #    logging.info(f"{self.prompt['sequential']['seen']['0']['Input']}")
         check_task_prompt(self.prompt, self.tasks)
         self.info = get_info_from_prompt(self.prompt)
-        if self.rank == 0:
-            logging.info(f"Required info: {self.info}")
-
-        # self.info.append('history')  # debug:temp: delete
+        #if self.rank == 0:
+        #    logging.info(f"Required info: {self.info}")
+        #logging.info(f"Prompt template loaded")
 
         if 'history' in self.info:
             self.max_his = int(args.max_his / 2)
             self.his_sep = args.his_sep
-
+        
         # load user sequence data
         self.user_sequence = utils.ReadLineFromFile(os.path.join(self.data_path, self.dataset, 'user_sequence.txt'))
         self.user_sequence_dict = indexing.construct_user_sequence_dict(self.user_sequence)  # JT: {uid: iid, iid, iid...}
-
         # apply indexing method and avoid generate data multiple times
         if args.distributed:
             if self.item_indexing == 'sequential':
@@ -128,11 +128,21 @@ class MultiTaskDatasetGen(Dataset):
                 self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_id(self.data_path, self.dataset, self.user_sequence_dict, phase)
                 if self.rank == 0:
                     logging.info("Reindex data with generative indexing method")
-                    indexing.generative_indexing_rec(self.data_path, self.dataset, self.user_sequence_dict, None, None, regenerate=False, phase=phase)
+                    indexing.generative_indexing_rec(self.data_path, self.dataset, self.user_sequence_dict, self.model_gen, self.tokenizer, regenerate=False, phase=phase)
                     dist.barrier()
                 else:
                     dist.barrier()
+                
                 self.reindex_user_seq_dict_rec, self.item_map_rec = indexing.generative_indexing_rec(self.data_path, self.dataset, self.user_sequence_dict, None, None, regenerate=False, phase=phase)
+                 # --- Add these DEBUG PRINT lines ---
+                # print(f"DEBUG: In MultiTaskDatasetGen __init__ just before calling generative_indexing_rec:")
+                # print(f"DEBUG: self.model_gen is type: {type(self.model_gen)}")
+                # if self.model_gen is not None:
+                #     print(f"DEBUG: self.model_gen is: {self.model_gen.__class__.__name__}") # Prints the class name of the model
+                # else:
+                #     print(f"DEBUG: self.model_gen is None here!")
+                # print(f"DEBUG: self.tokenizer is type: {type(self.tokenizer)}")
+                # print(f"DEBUG: self.regenerate is: {self.regenerate}")
             else:
                 raise NotImplementedError
         else:
@@ -150,19 +160,34 @@ class MultiTaskDatasetGen(Dataset):
                 self.new_token = []
                 for idx in list(self.item_map.values()):
                     self.new_token += re.findall(r'\<.*?\>', idx)
+            elif self.item_indexing == 'generative':
+                print("Current phase (MultiTaskDatasetGen): {}".format(phase))
+                self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_id(self.data_path, self.dataset, self.user_sequence_dict, phase)
+                #self.reindex_user_seq_dict_rec, self.item_map_rec = indexing.generative_indexing_rec(
+                #    self.data_path, self.dataset, self.user_sequence_dict, self.model_gen, self.tokenizer, regenerate=regenerate, phase=phase)    
+                self.reindex_user_seq_dict_rec, self.item_map_rec = indexing.generative_indexing_rec(
+                    self.data_path, self.dataset, self.user_sequence_dict, None, None, regenerate=False, phase=phase)      
+                logging.info("Reindex GEN data (item_id) with generative indexing method (single GPU)")
             else:
                 raise NotImplementedError
+
+            
             
             
         self.all_items = list(self.item_map.values())
-        # get positive samples for each user to sample negative candidates or evaluation
+        # get positive samples for each user to sample negative candidates for evaluation
         self.positive = self.get_positive()
+        
         
         # load data
         if self.mode == 'train':
             if self.rank == 0:
-                logging.info("loading training data for id generator")
+                logging.info("LOAD TRAIN DATA GEN")
             self.data_samples = self.load_train_id()
+            # with open("all_data_samples.txt", "w") as f:
+            #     for i, sample in enumerate(self.data_samples):
+            #         f.write(f"Sample {i}: {sample}\n")
+            logging.info("="*40)
         elif self.mode == 'validation':
             self.data_samples = self.load_validation()
             if self.rank == 0:
@@ -206,8 +231,7 @@ class MultiTaskDatasetGen(Dataset):
         - task_index: the cumulative index for each task. if task_index[i-1] <= idx < task_index[i], then the idx belongs to task[i]
             - For example, there are 100 data samples in total, there are 3 tasks, the task_prompt_num is [2,1,3], then the task_index is [200, 300, 600].
         """
-        if self.rank == 0:
-            logging.info(f"Getting prompt information")
+        #logging.info(f"Getting prompt information")
         if self.mode == 'train':
             if self.args.sample_prompt == 0:
                 self.task_prompt_num = [len(self.prompt[task]['seen']) for task in self.tasks]
@@ -263,7 +287,7 @@ class MultiTaskDatasetGen(Dataset):
 
                 data_samples.append(one_sample)
         return data_samples
-    
+
     def load_validation(self):
         """
         Load validation data samples
@@ -301,8 +325,8 @@ class MultiTaskDatasetGen(Dataset):
                 self._construct_sentence_all()
             else:
                 self._construct_sentence_sample()
-            if self.rank == 0:
-                logging.info(f"Input: {self.data['input'][100]} , Output: {self.data['output'][100]} ")
+            #if self.rank == 0:
+            logging.info(f"Input: {self.data['input'][100]} , Output: {self.data['output'][100]} ")
         elif self.mode == 'validation':
             if self.args.valid_prompt_sample == 0:
                 self._construct_sentence_valid()
@@ -348,7 +372,10 @@ class MultiTaskDatasetGen(Dataset):
                     self.data['output'].append(self.prompt[task]['seen'][str(pid)]['Output'].format(**datapoint))
         
     def generate_data(self):
-        """"""
+        """
+        Applies prompt templates to raw user-item interaction data.
+        Generates natural language input-output pairs for generative training.
+        Supports multi-task settings by looping through multiple tasks and multiple prompt styles."""
         self.data = {}
         self.data['history'] = []
         self.data['target'] = []
@@ -374,6 +401,16 @@ class MultiTaskDatasetGen(Dataset):
 
                     self.data['input_prompt'].append(input_prompt)
                     self.data['output_prompt'].append(output_prompt)
+        # if len(self.data['input_prompt']) > 0:
+        #     with open("gen_data_sample.txt", "w") as f:
+        #         f.write("Generate data(MultiTaskDataset_gen) samples:\n")
+        #         for i in range(len(self.data['input_prompt'])):
+        #             f.write(f"Sample {i}:\n")
+        #             f.write(f"  History: {self.data['history'][i]}\n")
+        #             f.write(f"  Target: {self.data['target'][i]}\n")
+        #             f.write(f"  Input Prompt: {self.data['input_prompt'][i]}\n")
+        #             f.write(f"  Output Prompt: {self.data['output_prompt'][i]}\n")
+        #             f.write("\n")
         return True
     
 
