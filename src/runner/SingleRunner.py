@@ -241,8 +241,8 @@ class SingleRunner:
         self.model_gen.train()
         current_phase_for_rec_dataset = current_round_num
         logging.info(f"Recommender training (Round {current_round_num+1}): Refreshing dataset/loader for phase {current_phase_for_rec_dataset}")
-        refreshed_TrainSetRec = get_dataset_generative(self.args, self.model_gen, self.tokenizer, phase=current_phase_for_rec_dataset, component_type="item")
-        _, self.train_loader_rec = get_loader(self.args, self.tokenizer, refreshed_TrainSetRec) 
+        _, refreshed_TrainSetRec = get_dataset_generative(self.args, self.model_gen, self.tokenizer, phase=current_phase_for_rec_dataset)
+        _, self.train_loader_rec = get_loader(self.args, self.tokenizer, None, refreshed_TrainSetRec) 
         for rec_epoch in range(self.args.rec_epochs):
             logging.info(f"Recommender - Round {current_round_num + 1}, Epoch {rec_epoch + 1}/{self.args.rec_epochs}")
             self.train_loader_rec.sampler.set_epoch(self.global_epoch_tracker)
