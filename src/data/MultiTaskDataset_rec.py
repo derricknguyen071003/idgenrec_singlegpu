@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-from utils.prompt import load_prompt_template, get_info_from_prompt,check_task_prompt
+from utils.prompt import load_prompt_template, get_info_from_prompt
 from utils import utils
 from utils import indexing
 from collections import defaultdict
@@ -16,209 +16,100 @@ import pdb
 
 
 class MultiTaskDatasetRec(Dataset):
-    def __init__(self, args, dataset, mode, model_gen, tokenizer, phase=0, regenerate=True):
+    def __init__(self, args, dataset, mode, model_gen, tokenizer, phase=0, regenerate=True, component=None):
         super().__init__()
         self.model_gen = model_gen
         self.tokenizer = tokenizer
         self.data_path = args.data_path
         self.dataset = dataset
         self.tasks = args.tasks.split(',')
-        if args.sample_prompt > 0:
-            assert len(self.tasks) == len(args.sample_num.split(',')), "prompt sample number does not match task number"
         self.item_indexing = args.item_indexing
         self.mode = mode
-        self.args = args
-        
+        self.args = args   
         self.phase = phase
-
-        self.rank = args.rank
-        self.prefix = args.his_prefix
-        self.skip_empty_his = args.skip_empty_his
-        self.collaborative_token_size = self.args.collaborative_token_size
-        self.collaborative_cluster_num = self.args.collaborative_cluster
-        self.collaborative_last_token = self.args.collaborative_last_token
-        self.collaborative_float32 = self.args.collaborative_float32
-        
-        if self.rank == 0:
-            logging.info(f"Generating REC data for {self.dataset} dataset (user sequence + textual ID (input+target))")
-
-        # # load and check prompt
-        # if self.rank == 0:
-        #     logging.info(f"Get prompt template from {args.prompt_file}")
         self.prompt = load_prompt_template(args.prompt_file, self.tasks)
-
-        # if self.rank == 0 and 'sequential' in self.prompt:  # changed JT
-        #     logging.info(f"{self.prompt['sequential']['seen']['0']['Input']}")
-        check_task_prompt(self.prompt, self.tasks)
         self.info = get_info_from_prompt(self.prompt)
-        # if self.rank == 0:
-        #     logging.info(f"Required info: {self.info}")
-        
+        self.component = component if component is not None else None
+        logging.info(f"(MultiTaskDatasetRec) Component: {self.component}")
         if 'history' in self.info:
             self.max_his = args.max_his
             self.his_sep = args.his_sep
 
-        # load user sequence data
         self.user_sequence = utils.ReadLineFromFile(os.path.join(self.data_path, self.dataset, 'user_sequence.txt'))
-        self.user_sequence_dict = indexing.construct_user_sequence_dict(self.user_sequence)  # JT: {uid: iid, iid, iid...}
-
-        # apply indexing method and avoid generate data multiple times
-        if args.distributed:
-            if self.item_indexing == 'sequential':
-                if self.rank == 0:
-                    logging.info("Reindex data with sequential indexing method")
-                    indexing.sequential_indexing(self.data_path, self.dataset, self.user_sequence_dict, args.sequential_order)
-                    dist.barrier()
-                else:
-                    dist.barrier()
-                self.reindex_user_seq_dict, self.item_map = indexing.sequential_indexing(self.data_path, self.dataset, self.user_sequence_dict, args.sequential_order)
-            elif self.item_indexing == 'random':
-                if self.rank == 0:
-                    logging.info("Reindex data with random indexing method")
-                    indexing.random_indexing(self.data_path, self.dataset, self.user_sequence_dict)
-                    dist.barrier()
-                else:
-                    dist.barrier()
-                self.reindex_user_seq_dict, self.item_map = indexing.random_indexing(self.data_path, self.dataset, self.user_sequence_dict)
-            elif self.item_indexing == 'collaborative':
-                if self.rank == 0:
-                    logging.info(f"Reindex data with collaborative indexing method with token_size {self.collaborative_token_size} and {self.collaborative_cluster_num} cluster")
-                    indexing.collaborative_indexing(self.data_path, self.dataset, self.user_sequence_dict, self.collaborative_token_size, \
-                                                    self.collaborative_cluster_num, self.collaborative_last_token, self.collaborative_float32)
-                    dist.barrier()
-                else:
-                    dist.barrier()
-                self.reindex_user_seq_dict, self.item_map = indexing.collaborative_indexing(self.data_path, self.dataset, self.user_sequence_dict, \
-                                                                                            self.collaborative_token_size, self.collaborative_cluster_num, \
-                                                                                            self.collaborative_last_token, self.collaborative_float32)
-                self.new_token = []
-                for idx in list(self.item_map.values()):
-                    self.new_token += re.findall(r'\<.*?\>', idx)
-            elif self.item_indexing == 'generative':
-                if self.rank == 0:
-                    logging.info("Reindex data with generative indexing method")
-                    indexing.generative_indexing_rec(self.data_path, self.dataset, self.user_sequence_dict, self.model_gen, self.tokenizer, regenerate=regenerate, phase=self.phase)
-                    dist.barrier()
-                else:
-                    dist.barrier()
-                self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_rec(self.data_path, self.dataset, self.user_sequence_dict, self.model_gen, self.tokenizer, regenerate=False, phase=self.phase)
-            else:
-                raise NotImplementedError
+        self.user_sequence_dict = indexing.construct_user_sequence_dict(self.user_sequence)  
+        indexing.generative_indexing_rec(self.data_path, self.dataset, self.user_sequence_dict, model_gen=self.model_gen, tokenizer=self.tokenizer, phase=phase, regenerate=regenerate, run_id=args.run_id, component=self.component, run_type=args.run_type)
+        self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_rec(
+            self.data_path, self.dataset, self.user_sequence_dict,
+            model_gen=self.model_gen, tokenizer=self.tokenizer, phase=phase, 
+            regenerate=False, run_id=args.run_id, component=self.component, run_type=args.run_type
+        )
+        if args.social_quantization_id:
+            self.user_social_map = indexing.generate_user_social_generative_index(
+                self.data_path, self.dataset, self.model_gen, self.tokenizer, phase, run_id=args.run_id, regenerate=True
+            )
+            run_dir = os.path.join(self.data_path, self.dataset, args.run_id)
+            suffix = ''
+            if args.run_type == '2id2rec':
+                if self.component == 'item_rec':
+                    suffix = '_item'
+                elif self.component == 'friend_rec':
+                    suffix = '_social'
+            elif args.run_type == '2id1rec':
+                if self.component == 'item_view':
+                    suffix = '_item'
+                elif self.component == 'social_view':
+                    suffix = '_social'
+            user_map = indexing.get_dict_from_lines(utils.ReadLineFromFile(os.path.join(run_dir, f'user_generative_index_phase_{phase}{suffix}.txt')))
+            self.textual_to_social_map = {}
+            for original_id, textual_id in user_map.items():
+                if original_id in self.user_social_map:
+                    self.textual_to_social_map[textual_id] = self.user_social_map[original_id]
+            logging.info(f"(MultiTaskDatasetRec) Generated user social quantization map with {len(self.user_social_map)} users")
         else:
-            if self.item_indexing == 'sequential':
-                logging.info("Reindex data with sequential indexing method")
-                self.reindex_user_seq_dict, self.item_map = indexing.sequential_indexing(self.data_path, self.dataset, self.user_sequence_dict, args.sequential_order)
-            elif self.item_indexing == 'random':
-                logging.info("Reindex data with random indexing method")
-                self.reindex_user_seq_dict, self.item_map = indexing.random_indexing(self.data_path, self.dataset, self.user_sequence_dict)
-            elif self.item_indexing == 'collaborative':
-                logging.info(f"Reindex data with collaborative indexing method with token_size {self.collaborative_token_size} and {self.collaborative_cluster_num} cluster")
-                self.reindex_user_seq_dict, self.item_map = indexing.collaborative_indexing(self.data_path, self.dataset, self.user_sequence_dict, \
-                                                                                            self.collaborative_token_size, self.collaborative_cluster_num, \
-                                                                                            self.collaborative_last_token, self.collaborative_sparse, self.collaborative_float32)
-                self.new_token = []
-                for idx in list(self.item_map.values()):
-                    self.new_token += re.findall(r'\<.*?\>', idx)
-            elif self.item_indexing == 'generative':             
-                print("Current phase (MultiTaskDatasetRec): ", self.phase)  
-                indexing.generative_indexing_rec(self.data_path, self.dataset, self.user_sequence_dict, self.model_gen, self.tokenizer, regenerate=regenerate, phase=self.phase)
-                self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_rec(
-                    self.data_path, self.dataset, self.user_sequence_dict,
-                    model_gen=self.model_gen, tokenizer=self.tokenizer, phase=phase, 
-                    regenerate=False
-                )
-                
-                logging.info("Reindex REC data with generative indexing method (single GPU)")
-            else:
-                raise NotImplementedError
-            
-            
+            self.user_social_map = {}
+            self.textual_to_social_map = {}
         self.all_items = list(self.item_map.values())
-        # get positive samples for each user to sample negative candidates or evaluation
-        self.positive = self.get_positive()
         
+        # Load cross-view token information for diffusion (if enabled and in 2id2rec mode)
+        self.cross_view_dict = {}
+        if getattr(args, 'use_diffusion', 0) and args.run_type in ['2id2rec', '2id2rec_socialtoid']:
+            if self.component == 'item_rec':
+                # For item view: need social view tokens
+                try:
+                    run_dir = os.path.join(self.data_path, self.dataset, args.run_id)
+                    # Try to load social friend sequence with generated IDs
+                    social_suffix = '_social'
+                    social_user_index_file = os.path.join(run_dir, f'user_generative_index_phase_{phase}{social_suffix}.txt')
+                    
+                    if not os.path.exists(social_user_index_file):
+                        # Try without suffix as fallback
+                        social_user_index_file = os.path.join(run_dir, f'user_generative_index_phase_{phase}.txt')
+                    
+                    if os.path.exists(social_user_index_file):
+                        social_user_dict = indexing.get_dict_from_lines(utils.ReadLineFromFile(social_user_index_file))
+                        # Load friend sequence to get social tokens per user
+                        friend_sequence_lines = utils.ReadLineFromFile(os.path.join(self.data_path, self.dataset, 'friend_sequence.txt'))
+                        friend_sequence_dict = indexing.construct_user_sequence_dict(friend_sequence_lines)
+                        # Map original user IDs to their social token sequences
+                        for orig_uid, friends in friend_sequence_dict.items():
+                            if orig_uid in social_user_dict:
+                                # Get social tokens for this user's friends
+                                social_tokens = []
+                                for friend in friends[:-2]:  # Training friends only (exclude validation and test)
+                                    if friend in social_user_dict:
+                                        social_tokens.append(social_user_dict[friend])
+                                if social_tokens:
+                                    self.cross_view_dict[orig_uid] = ' '.join(social_tokens)
+                        logging.info(f"(MultiTaskDatasetRec) Loaded cross-view (social) tokens for {len(self.cross_view_dict)} users")
+                    else:
+                        logging.warning(f"(MultiTaskDatasetRec) Social user index file not found: {social_user_index_file}. Cross-view tokens will not be available.")
+                except Exception as e:
+                    logging.warning(f"(MultiTaskDatasetRec) Could not load cross-view tokens: {e}. Will fall back to random noise.")
         
-        # load data
-        if self.mode == 'train':
-            if self.rank == 0:
-                logging.info("LOAD TRAIN DATA REC")
-            self.data_samples = self.load_train()
-            # with open('train_data_rec_samples.txt', 'w') as f:
-            #     for sample in self.data_samples:
-            #         f.write(f"{sample}\n")
-        
-
-        elif self.mode == 'validation':
-            self.data_samples = self.load_validation()
-            if self.rank == 0:
-                logging.info("loading validation data")
-            self.valid_prompt = args.valid_prompt
-            if self.rank == 0:
-                logging.info(f"The validation prompt is {self.valid_prompt}")
-        else:
-            raise NotImplementedError
-
-        # get prompt related info, including numbers and index
+        self.data_samples = self.load_train()
+        self.valid_data_samples = self.load_validation()
         self.get_prompt_info()
-        
         self.construct_sentence()
-    
-    def get_positive(self):
-        """
-        Get a dict of set to save the positive interactions for negative candidate sampling
-        """
-        positive = dict()
-        for user in self.reindex_user_seq_dict:
-            if self.mode == 'train':
-                positive[user] = set(self.reindex_user_seq_dict[user][:-2])
-            if self.mode == 'validation':
-                positive[user] = set(self.reindex_user_seq_dict[user][:-1])
-            if self.mode == 'test':
-                positive[user] = set(self.reindex_user_seq_dict[user])
-        return positive
-    
-    def shuffle(self, seed):
-        g = torch.Generator()
-        g.manual_seed(seed)
-        
-        for task in self.task_data:
-            indices = torch.randperm(len(self.task_data[task]), generator=g).tolist()
-            self.task_data[task] = [self.task_data[task][i] for i in indices]
-        
-        
-    def get_prompt_info(self):
-        """
-        Calculate number of prompts and cumulative index for each task
-        - task_prompt_num: save the number of prompts for each task
-        - task_index: the cumulative index for each task. if task_index[i-1] <= idx < task_index[i], then the idx belongs to task[i]
-            - For example, there are 100 data samples in total, there are 3 tasks, the task_prompt_num is [2,1,3], then the task_index is [200, 300, 600].
-        """
-        # if self.rank == 0:
-        #     logging.info(f"Getting prompt information")
-        if self.mode == 'train':
-            if self.args.sample_prompt == 0:
-                self.task_prompt_num = [len(self.prompt[task]['seen']) for task in self.tasks]
-            else:
-                sample_number = self.args.sample_num.split(',')
-                self.task_prompt_num = [int(sample_number[i]) for i in range(len(self.tasks))]
-        else:
-            if self.args.valid_prompt_sample == 0:
-                self.task_prompt_num = [1] * len(self.tasks)
-            else:
-                sample_number = self.args.valid_sample_num.split(',')
-                self.task_prompt_num = [int(sample_number[i]) for i in range(len(self.tasks))]
-        self.task_index = [self.task_prompt_num[0] * len(self.data_samples)]
-        for i in range(1, len(self.task_prompt_num)):
-            self.task_index.append(self.task_index[i-1] + self.task_prompt_num[i] * len(self.data_samples))
-        self.task_data = dict()
-        for i in range(len(self.tasks)):
-            if i == 0:
-                start = 0
-            else:
-                start = self.task_index[i-1]
-            end = self.task_index[i]
-            task = self.tasks[i]
-            self.task_data[task] = [i for i in range(start, end)]
 
     def load_train(self):
         """
@@ -230,44 +121,31 @@ class MultiTaskDatasetRec(Dataset):
             'target': tokenized target item
         }
         """
-        data_samples = []  # List to store training examples
+        data_samples = []
 
         for user in self.reindex_user_seq_dict:
-            # Only use the training portion (exclude last 2 items for val/test)
             items = self.reindex_user_seq_dict[user][:-2]
 
             for i in range(len(items)):
-                # Optional: skip training examples where the history is empty
-                if i == 0:
-                    if self.skip_empty_his > 0:
-                        continue
-
                 one_sample = dict()
                 one_sample['dataset'] = self.dataset
-                one_sample['user_id'] = user
-
-                # Set the target item to predict at time i
-                # If self.prefix > 0, add string prefix 'item_' (e.g., for T5 input formatting)
-                if self.prefix > 0:
-                    one_sample['target'] = 'item_' + items[i]
+                if self.args.social_quantization_id and user in self.textual_to_social_map:
+                    one_sample['user_id'] = self.textual_to_social_map[user]
                 else:
-                    one_sample['target'] = items[i]
+                    one_sample['user_id'] = user
+                # Store original user ID for cross-view lookup
+                one_sample['original_user_id'] = user
+                one_sample['target'] = items[i]
 
-                # Optionally include history if 'history' is one of the fields to use
                 if 'history' in self.info:
-                    history = items[:i]  # Take all items before the current index
+                    history = items[:i]  
 
-                    # Limit the history length if max_his is set
                     if self.max_his > 0:
                         history = history[-self.max_his:]
 
-                    # Format the history string, optionally adding 'item_' prefix
-                    if self.prefix > 0:
-                        one_sample['history'] = self.his_sep.join(["item_" + item_idx for item_idx in history])
-                    else:
-                        one_sample['history'] = self.his_sep.join(history)
 
-                # Append this training sample to the list
+                    one_sample['history'] = self.his_sep.join(history)
+
                 data_samples.append(one_sample)
 
         return data_samples
@@ -283,69 +161,66 @@ class MultiTaskDatasetRec(Dataset):
             one_sample = dict()
             one_sample['dataset'] = self.dataset
             one_sample['user_id'] = user
-            if self.prefix > 0:
-                one_sample['target'] = 'item_' + items[-2]
-            else:
-                one_sample['target'] = items[-2]
+            
+            one_sample['target'] = items[-2]
             if 'history' in self.info:
                 history = items[:-2]
                 if self.max_his > 0:
                     history = history[-self.max_his:]
-                if self.prefix > 0:
-                    one_sample['history'] = self.his_sep.join(["item_" + item_idx for item_idx in history])
-                else:
-                    one_sample['history'] = self.his_sep.join(history)
+                
+                one_sample['history'] = self.his_sep.join(history)
             data_samples.append(one_sample)
         return data_samples
     
-        
     def __len__(self):
         return len(self.data['input'])
     
-    
     def construct_sentence(self):
-        if self.mode == 'train':
-            if self.args.sample_prompt == 0:
-                self._construct_sentence_all()
-            else:
-                self._construct_sentence_sample()
-            #if self.rank == 0:
-            #    logging.info(f"Input: {self.data['input'][100]} , Output: {self.data['output'][100]} ")
-        elif self.mode == 'validation':
-            if self.args.valid_prompt_sample == 0:
-                self._construct_sentence_valid()
-            else:
-                self._construct_sentence_sample()
-            if self.rank == 0:
-                logging.info(f"Input: {self.data['input'][100]} , Output: {self.data['output'][100]} ")
-                logging.info(f"Input: {self.data['input'][101]} , Output: {self.data['output'][101]} ")
+        if self.args.sample_prompt == 0:
+            self._construct_sentence_all()
+        else:
+            self._construct_sentence_sample()
     
+    def shuffle(self, seed):
+            g = torch.Generator()
+            g.manual_seed(seed)
+            
+            for task in self.task_data:
+                indices = torch.randperm(len(self.task_data[task]), generator=g).tolist()
+                self.task_data[task] = [self.task_data[task][i] for i in indices]
+
+
     def _construct_sentence_valid(self):
         self.data = {}
         self.data['input'] = []
         self.data['output'] = []
+        self.idx_to_sample_idx = []  # Mapping from data index to sample index
         setting = self.valid_prompt.split(':')
         for task in self.tasks:
             for i in range(len(self.data_samples)):
                 datapoint = self.data_samples[i]
                 self.data['input'].append(self.prompt[task][setting[0]][setting[1]]['Input'].format(**datapoint))
                 self.data['output'].append(self.prompt[task][setting[0]][setting[1]]['Output'].format(**datapoint))
+                self.idx_to_sample_idx.append(i)  # Map this data index to sample index i
     
     def _construct_sentence_all(self):
         self.data = {}
         self.data['input'] = []
         self.data['output'] = []
+        self.idx_to_sample_idx = []  # Mapping from data index to sample index
         for task in self.tasks:
             for i in range(len(self.data_samples)):
                 datapoint = self.data_samples[i]
                 for pid in self.prompt[task]['seen']:
                     self.data['input'].append(self.prompt[task]['seen'][pid]['Input'].format(**datapoint))
                     self.data['output'].append(self.prompt[task]['seen'][pid]['Output'].format(**datapoint))
+                    self.idx_to_sample_idx.append(i)  # Map this data index to sample index i
                     
     def _construct_sentence_sample(self):
         self.data = {}
         self.data['input'] = []
         self.data['output'] = []
+        self.idx_to_sample_idx = []  
         for t in range(len(self.tasks)):
             task = self.tasks[t]
             for i in range(len(self.data_samples)):
@@ -354,9 +229,51 @@ class MultiTaskDatasetRec(Dataset):
                     pid = random.randint(0, len(self.prompt[task]['seen']) - 1)
                     self.data['input'].append(self.prompt[task]['seen'][str(pid)]['Input'].format(**datapoint))
                     self.data['output'].append(self.prompt[task]['seen'][str(pid)]['Output'].format(**datapoint))
-        
-    
+                    self.idx_to_sample_idx.append(i)  # Map this data index to sample index i
+            
+    def get_prompt_info(self):
+        """
+        Calculate number of prompts and cumulative index for each task
+        - task_prompt_num: save the number of prompts for each task
+        - task_index: the cumulative index for each task. if task_index[i-1] <= idx < task_index[i], then the idx belongs to task[i]
+            - For example, there are 100 data samples in total, there are 3 tasks, the task_prompt_num is [2,1,3], then the task_index is [200, 300, 600].
+        """       
+        if self.args.sample_prompt == 0:
+            self.task_prompt_num = [len(self.prompt[task]['seen']) for task in self.tasks]
+        else:
+            sample_number = self.args.sample_num.split(',')
+            self.task_prompt_num = [int(sample_number[i]) for i in range(len(self.tasks))]
+        self.task_index = [self.task_prompt_num[0] * len(self.data_samples)]
+        for i in range(1, len(self.task_prompt_num)):
+            self.task_index.append(self.task_index[i-1] + self.task_prompt_num[i] * len(self.data_samples))
+        self.task_data = dict()
+        for i in range(len(self.tasks)):
+            if i == 0:
+                start = 0
+            else:
+                start = self.task_index[i-1]
+            end = self.task_index[i]
+            task = self.tasks[i]
+            self.task_data[task] = [i for i in range(start, end)]
+ 
     def __getitem__(self, idx):
+        sample_idx = self.idx_to_sample_idx[idx]
+        result = {
+            'input': self.data['input'][idx],
+            'output': self.data['output'][idx],
+            'user_idx': self.data_samples[sample_idx]['user_id']
+        }
         
-        return {'input': self.data['input'][idx],
-               'output': self.data['output'][idx]}
+        # Add cross-view tokens if available (for diffusion)
+        if hasattr(self, 'cross_view_dict') and self.cross_view_dict:
+            # Get original user ID from data sample
+            user_id = self.data_samples[sample_idx].get('original_user_id', self.data_samples[sample_idx]['user_id'])
+            # Try to find cross-view tokens (may need to map through textual_to_social_map)
+            if user_id in self.cross_view_dict:
+                result['cross_view_tokens'] = self.cross_view_dict[user_id]
+            else:
+                result['cross_view_tokens'] = None
+        else:
+            result['cross_view_tokens'] = None
+        
+        return result

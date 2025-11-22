@@ -1,5 +1,117 @@
-__pycache__/
-*pickle
-rec_datasets/
+
+
+# PyTorch
+*.pth
+*.pt
+*.pkl
+*.pickle
+
+
+# Environment variables
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project-specific
+# Model checkpoints and weights
 model/
+checkpoint/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Training logs
+log/
+logs/
+*.log
+
+# Dataset files (usually large)
+rec_datasets/
+data/
+datasets/
+*.csv
+*.tsv
+*.json
+*.jsonl
+*.parquet
+
+# Wandb tracking
+wandb/
+.wandb/
+
+command/baseline/*
+
+# Generated files
+user_token_hidden_states.txt
+*_hidden_states.txt
+*_generated_*.txt
+*_indexing_*.txt
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Results and outputs
+results/
+outputs/
+output/
+runs/
+
+# Documentation
 IDGenRec.pdf
+*.pdf
+
+# Conda
+environment.txt
+requirements.txt
+conda-meta/
+
+# Large files that shouldn't be in git
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Installers
+Miniconda*.sh
+Anaconda*.sh
+*conda*.sh
+
+# Cache directories
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json

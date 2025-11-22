@@ -49,14 +49,4 @@ def get_info_from_prompt(prompt_templates):
     info = [i[1:-1] for i in set(info)]
     return info
 
-def check_task_prompt(prompt_templates, task_list):
-    """
-    Check if all tasks have prompt templates. Raise Error if training tasks have no prompt.
-    Input:
-    - prompt_templates: A dictionary of prompt templates.
-    - task_list: A list of training tasks.
-    """
-    for task in task_list:
-        assert task in prompt_templates, f"No prompt for {task} task"
-    
 

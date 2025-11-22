@@ -1,0 +1,1 @@
+sequential; seen; User {user_id} has friends {history}.; 

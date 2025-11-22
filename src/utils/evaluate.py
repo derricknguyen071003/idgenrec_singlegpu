@@ -70,9 +70,6 @@ def get_metrics_results(rel_results, metrics):
     return np.array(res)
 
 def ndcg_at_k(relevance, k):
-    """
-    Since we apply leave-one-out, each user only have one ground truth item, so the idcg would be 1.0
-    """
     ndcg = 0.0
     for row in relevance:
         rel = row[:k]
@@ -81,8 +78,7 @@ def ndcg_at_k(relevance, k):
             one_ndcg += rel[i] / math.log(i+2,2)
         ndcg += one_ndcg
     return ndcg
-        
-    
+           
 def hit_at_k(relevance, k):
     correct = 0.0
     for row in relevance:

@@ -1,0 +1,11 @@
+sequential; seen; User {user_id} has friends {history}. What is the next friend recommendation for the user?; {target}
+sequential; seen; Here is the friend list of user {user_id}: friends {history}. I wonder what is the next recommended friend for the user.; {target}
+sequential; seen; user {user_id} has friends {history}, predict next possible friend to be connected with the user?; {target}
+sequential; seen; I find the friend list of user {user_id}: friends {history}, I wonder what other friends does the user need. Can you help me decide?; {target}
+sequential; seen; According to what friends user {user_id} has: friends {history}, Can you recommend another friend to the user?; {target}
+sequential; seen; What would user {user_id} be likely to connect with next after having friends {history}?; {target}
+sequential; seen; By analyzing the user {user_id}'s friends {history}, what is the next friend expected to be connected?; {target}
+sequential; seen; Can you recommend the next friend for user {user_id}, given the user's friends {history}?; {target}
+sequential; seen; After connecting with friends {history}, what is the next friend that could be recommended for user {user_id}?; {target}
+sequential; seen; The user {user_id} has friends: friends {history}, What else do you think is necessary for the user?; {target}
+sequential; unseen; What is the top recommended friend for user {user_id} who has friends {history}?; {target}

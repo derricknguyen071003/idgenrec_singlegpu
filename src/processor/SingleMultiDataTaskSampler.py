@@ -4,16 +4,6 @@ import math
 
 
 class SingleMultiDataTaskSampler(Sampler):
-    def parse_sampler_args(parser):
-        """
-        parse sampler related command line arguments
-        """
-        parser.add_argument("--batch_size", type=int, default=32, help="batch size")
-        parser.add_argument("--eval_batch_size", type=int, default=32, help="the batch size for evaluation")
-        parser.add_argument("--dist_sampler", type=int, default=0, help='use DistributedSampler if 1, otherwise use our own sampler.')
-        
-        return parser
-    
     def __init__(self, dataset, batch_size, seed, shuffle=True):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -45,8 +35,6 @@ class SingleMultiDataTaskSampler(Sampler):
             cur_cum_index = cum_index[i]
             for task in ds.task_data:
                 task_cum_index.append(cur_cum_index)
-                # cur_cum_index += len(ds.task_data[task])
-                
                 
         step = self.batch_size * len(self.dataset_task_size)
         epoch_data_size = self.largest_task_size * len(self.dataset_task_size)

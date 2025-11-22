@@ -7,37 +7,85 @@ import logging
 import sys
 import random
 import torch
-
-
+from pathlib import Path
+import wandb
 def parse_global_args(parser):
+    # Basic configuration
     parser.add_argument("--seed", type=int, default=2023, help="Random seed")
     parser.add_argument("--model_dir", type=str, default='../model', help='The model directory')
-    parser.add_argument("--checkpoint_dir", type=str, default='../checkpoint', help='The checkpoint directory')
-    parser.add_argument("--model_name", type=str, default='model.pt', help='The model name')
     parser.add_argument("--log_dir", type=str, default='../log', help='The log directory')
-    parser.add_argument("--distributed", type=int, default=1, help='use distributed data parallel or not.')
-    parser.add_argument("--gpu", type=str, default='0,1,2,3', help='gpu ids, if not distributed, only use the first one.')
-    parser.add_argument("--master_addr", type=str, default='localhost', help='Setup MASTER_ADDR for os.environ')
-    parser.add_argument("--master_port", type=str, default='12345', help='Setup MASTER_PORT for os.environ')
+    parser.add_argument("--item_gpu", type=int, default=0, help='gpu id for item recommender (for multi-GPU mode)')
     parser.add_argument('--logging_level', type=int, default=logging.INFO,help='Logging Level, 0, 10, ..., 50')
-    # parser.add_argument("--training_strategy", type=int, default=0, help=(
-    #         "only used for generative ID. 0: train ID generator only, "
-    #         "1: train recommendation model only. 2: start with training ID generator. "
-    #         "3: start with training recommendation model"
-    #     )
-    # )
+    
+    # Training configuration
     parser.add_argument("--id_epochs", type=int, default=10, help=("train id for certain num of epochs"))
     parser.add_argument("--rec_epochs", type=int, default=10, help=("train rec for certain num of epochs"))
     parser.add_argument("--id_batch_size", type=int, default=4, help="batch size for id generator")
-    parser.add_argument("--rec_batch_size", type=int, default=64, help="batch size for rec model")
+    parser.add_argument("--social_batch_size", type=int, default=4, help="batch size for social model")
+    parser.add_argument("--rec_batch_size", type=int, default=4, help="batch size for rec model")
+    parser.add_argument("--eval_batch_size", type=int, default=1, help="batch size for evaluation")
+    parser.add_argument("--batch_size", type=int, default=32, help="batch size")
+    parser.add_argument("--num_workers", type=int, default=8, help="number of data loading workers for DataLoader (8 is more stable than 16)")
+    parser.add_argument("--train", type=int, default=1, help='Train or not (1 for train, 0 for no train)')
+    
+    # Model paths
     parser.add_argument("--rec_model_path", type=str, help="path to rec model")
-    parser.add_argument("--id_model_path", type=str, help="path to id model")
+    parser.add_argument("--social_model_path", type=str, help="path to social model")
+    
+    # Learning rates
     parser.add_argument("--id_lr", type=float, default=1e-3, help="learning rate for recommendation model")
     parser.add_argument("--rec_lr", type=float, default=1e-5, help="learning rate for generation model")
+    
+    # Optimizer arguments
+    parser.add_argument("--optim", type=str, default='AdamW', help='The name of the optimizer')
+    parser.add_argument("--clip", type=float, default=1.0, help="Gradient clipping value")
+    parser.add_argument("--warmup_prop", type=float, default=0.05, help="Warmup proportion for scheduler")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--adam_eps", type=float, default=1e-6)
+    
+    # Model architecture
+    parser.add_argument("--backbone", type=str, default='t5-small', help='Default backbone model name')
+    parser.add_argument("--metrics", type=str, default='hit@1,hit@5,hit@10,hit@20,ndcg@1,ndcg@5,ndcg@10,ndcg@20', help='Metrics for evaluation')
+    
+    # Run configuration
+    parser.add_argument('--run_id', type=str, default='default', help='Unique identifier for this run to separate index files')
     parser.add_argument("--alt_style", type=str, default="id_first", help="choose from rec_first or id_first")
-    parser.add_argument("--test_epoch_id", type=int, default=1)
-    parser.add_argument("--test_epoch_rec", type=int, default=5)
     parser.add_argument("--rounds", type=int, default=3, help="number of iterations")
+    parser.add_argument("--use_wandb", type=int, default=1, help="use wandb")
+    parser.add_argument("--use_friend_seq", type=int, default=0, help="use friend sequence")
+    parser.add_argument("--random_remove_friend", type=float, default=0.0, help="randomly remove friend connections (0.0 to 1.0, percentage of connections to remove)")
+    parser.add_argument("--phase", type=int, default=0, help="phase")
+    parser.add_argument("--run_type", type=str, default="original_idgenrec", help="choose from original_idgenrec, social_to_rec, social_to_id, social_to_both, 1id2rec, 2id2rec, 2id1rec")
+    
+    # Dataset arguments
+    parser.add_argument("--data_path", type=str, default='../rec_datasets', help="data directory")
+    parser.add_argument("--item_indexing", type=str, default='sequential', help="item indexing method, including random, sequential, collaborative, and generative")
+    parser.add_argument("--tasks", type=str, default='sequential,direct,straightforward', help="Downstream tasks, separate by comma")
+    parser.add_argument("--datasets", type=str, default='Beauty', help="Dataset names, separate by comma")
+    parser.add_argument("--prompt_file", type=str, default='../template/prompt.txt', help='the path of the prompt template file')
+    parser.add_argument("--social_prompt_file", type=str, default='../template/prompt_social.txt', help='the path of the social prompt template file')
+    parser.add_argument("--socialtoid_mode", type=str, default='sequential', choices=['sequential', 'flat'], help='Social data mode: sequential for friend recommendation, idgen for ID generation without target')
+    
+    # Sequential task arguments
+    parser.add_argument("--max_his", type=int, default=-1, help='the max number of items in history sequence, -1 means no limit')
+    parser.add_argument("--his_sep", type=str, default=' ; ', help='The separator used for history')
+    
+    # Prompt sampling arguments
+    parser.add_argument("--test_prompt", type=str, default='seen:0', help='the prompt for testing')
+    parser.add_argument("--sample_prompt", type=int, default=0, help='sample prompt or not')
+    parser.add_argument("--social_sample_prompt", type=int, default=0, help='sample prompt for social data')
+    parser.add_argument("--sample_num", type=str, default='2,2,2', help='the number of sampled data for each task')
+    parser.add_argument("--social_quantization_id", type=int, default=0, help='use social quantization or not')
+    
+    # Discrete diffusion arguments
+    parser.add_argument("--use_diffusion", type=int, default=0, help="Enable discrete diffusion (1) or not (0)")
+    parser.add_argument("--diffusion_timesteps", type=int, default=100, help="Number of diffusion timesteps T")
+    parser.add_argument("--diffusion_beta_max", type=float, default=0.1, help="Maximum corruption probability β_max")
+    parser.add_argument("--diffusion_cross_prob", type=float, default=0.5, help="Probability of using cross-view noise vs random noise")
+    parser.add_argument("--lambda_mask", type=float, default=0.1, help="Weight for noise mask prediction loss")
+    parser.add_argument("--lambda_kl", type=float, default=0.1, help="Weight for KL divergence loss between views")
+    parser.add_argument("--noise_head_dropout", type=float, default=0.1, help="Dropout probability for noise prediction head")
     return parser
 
 def set_seed(seed):
@@ -49,20 +97,61 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.enabled = False
 
+def torch_isin(elements: torch.Tensor, test_elements: torch.Tensor) -> torch.Tensor:
+        if hasattr(torch, 'isin'):
+            return torch.isin(elements, test_elements)
+        else:
+            # Broadcasted comparison and reduction
+            return (elements[..., None] == test_elements).any(-1)
 
 def load_pickle(filename):
     with open(filename, "rb") as f:
         return pickle.load(f)
 
-
 def save_pickle(data, filename):
     with open(filename, "wb") as f:
-        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)        
         
-        
+def remove_friend_connections_from_lines(lines, removal_percentage, seed=None):
+    if seed is not None:
+        random.seed(seed)
+    if not 0.0 <= removal_percentage <= 1.0:
+        raise ValueError("Removal percentage must be between 0.0 and 1.0")
+    if removal_percentage == 0.0:
+        return lines
+    modified_lines = []
+    total_connections = 0
+    removed_connections = 0
+    for line in lines:
+        line = line.strip()
+        if not line:  # Skip empty lines
+            modified_lines.append(line)
+            continue   
+        parts = line.split()
+        if len(parts) < 2:  # User with no friends
+            modified_lines.append(line)
+            continue
+        user_id = parts[0]
+        friends = parts[1:]
+        num_friends = len(friends)
+        num_to_remove = int(num_friends * removal_percentage)   
+        if num_to_remove > 0:
+            friends_to_remove = random.sample(friends, num_to_remove)
+            remaining_friends = [f for f in friends if f not in friends_to_remove]
+            removed_connections += num_to_remove
+        else:
+            remaining_friends = friends
+        total_connections += num_friends
+        if remaining_friends:
+            modified_lines.append(f"{user_id} {' '.join(remaining_friends)}")
+        else:
+            modified_lines.append(f"{user_id}")
+    logging.info(f"Friend removal complete: {removed_connections}/{total_connections} connections removed ({removed_connections/total_connections*100:.2f}%)")
+    return modified_lines
+
 def ReadLineFromFile(path):
     if not os.path.exists(path):
-        raise FileNotFoundError
+        raise FileNotFoundError(f"File not found: {path}")
     lines = []
     with open(path,'r') as fd:
         for line in fd:
@@ -77,7 +166,6 @@ def WriteDictToFile(path, write_dict):
             else:
                 out.write(user + ' ' + str(items) + '\n')
 
-                        
 def get_init_paras_dict(class_name, paras_dict):
     base_list = inspect.getmro(class_name)
     paras_list = []
@@ -93,119 +181,28 @@ def get_init_paras_dict(class_name, paras_dict):
     return out_dict
 
 def setup_logging(args):
-    args.log_name = log_name(args)
-    if len(args.datasets.split(',')) > 1:
-        folder_name = 'SP5'
+    # Example logging directory: ../log/train/Beauty/default.log
+    dataset_str = getattr(args, 'datasets', 'UnknownDataset')
+    if args.train:
+        folder = os.path.join(args.log_dir, "train", dataset_str)
     else:
-        folder_name = args.datasets
-    folder = os.path.join(args.log_dir, folder_name)
+        folder = os.path.join(args.log_dir, "test", dataset_str)
     if not os.path.exists(folder):
         os.makedirs(folder)
-    log_file = os.path.join(args.log_dir, folder_name, args.log_name + '.log')
-    
+    log_file = os.path.join(folder, args.run_id + '.log')
+    if os.path.exists(log_file):
+        os.remove(log_file)
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
     logging.basicConfig(filename=log_file, level=args.logging_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
-    
+    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))   
+    logging.info(f"Logging {args.run_id} to {log_file}")
     return
 
-# In src/utils/utils.py
-# Ensure 'os' is imported at the top of your utils.py: import os
-
-def log_name(args):
-    """
-    Creates a descriptive log filename based on experiment arguments.
-    Prioritizes alternating training parameters if an alt_style is specified.
-    """
-    # Determine base name part from dataset(s)
-    # Use getattr for safety, in case args.datasets is not defined by any active parser
-    # (though parse_global_args or dataset_args should define it)
-    dataset_str = getattr(args, 'datasets', 'UnknownDataset') 
-    if isinstance(dataset_str, str) and len(dataset_str.split(',')) > 1:
-        log_name_base = 'MultiDs' # Indicator for multiple datasets
-    else:
-        log_name_base = str(dataset_str).replace('/', '_') # Sanitize if it's path-like
-
-    params = [log_name_base]
-
-    # Helper to add param to log name if it exists and is not a common default/empty value
-    def add_param_if_relevant(attr_name, display_prefix="", default_to_skip=None, is_path=False):
-        if hasattr(args, attr_name):
-            val = getattr(args, attr_name)
-            
-            if val is None or (isinstance(val, str) and not val.strip()): # Skip None or empty strings
-                return
-            if default_to_skip is not None and val == default_to_skip: # Skip if it's a common default
-                return
-
-            prefix = display_prefix or attr_name.replace('_', '') # Use display_prefix or a shortened attr_name
-            
-            current_val_str = str(val)
-            if is_path:
-                current_val_str = os.path.splitext(os.path.basename(current_val_str))[0] # Filename without ext
-            
-            params.append(f"{prefix}{current_val_str}")
-
-    # Add parameters relevant to the experiment
-    current_alt_style = getattr(args, 'alt_style', 'none') # Default to 'none' if not set
-    add_param_if_relevant('alt_style', 'as', default_to_skip='none') 
-    
-    if current_alt_style and str(current_alt_style).lower() not in ['none', '']:
-        # Alternating training parameters
-        add_param_if_relevant('rounds', 'r')
-        add_param_if_relevant('id_epochs', 'ide')
-        add_param_if_relevant('rec_epochs', 'rece')
-        add_param_if_relevant('id_lr', 'idlr')
-        add_param_if_relevant('rec_lr', 'reclr')
-        if hasattr(args, 'id_batch_size'): params.append(f"idbs{args.id_batch_size}")
-        if hasattr(args, 'rec_batch_size'): params.append(f"recbs{args.rec_batch_size}")
-    else: 
-        # Fallback to generic epochs, lr, batch_size if not using a recognized alternating style
-        # These attributes ('epochs', 'lr', 'batch_size') must be defined in args by some parser
-        # if this path is taken. The parse_global_args can provide defaults.
-        add_param_if_relevant('epochs', 'e', default_to_skip=0) # Check against a common "not set" default
-        add_param_if_relevant('lr', 'lr', default_to_skip=0.0)
-        if not (hasattr(args, 'alt_style') and args.alt_style and str(args.alt_style).lower() not in ['none', '']):
-             # Only add generic batch_size if not already covered by idbs/recbs
-            if not (hasattr(args, 'id_batch_size') or hasattr(args, 'rec_batch_size')):
-                add_param_if_relevant('batch_size', 'bs', default_to_skip=0)
-        
-    add_param_if_relevant('backbone', 'bb')
-    add_param_if_relevant('item_indexing', 'idx')
-    add_param_if_relevant('tasks')
-    add_param_if_relevant('sample_prompt', 'sp', default_to_skip=0)
-    if getattr(args, 'sample_prompt', 0) == 1 and hasattr(args, 'sample_num'): # Only add sample_num if sample_prompt is active
-        add_param_if_relevant('sample_num', 'sn')
-    add_param_if_relevant('max_his', 'mh', default_to_skip=-1)
-    add_param_if_relevant('his_prefix', 'hp', default_to_skip=0) 
-    add_param_if_relevant('skip_empty_his', 'seh', default_to_skip=1)
-    add_param_if_relevant('prompt_file', 'pf', is_path=True)
-    add_param_if_relevant('seed') 
-    if hasattr(args, 'distributed'): add_param_if_relevant('distributed', 'dist', default_to_skip=0)
-
-
-    # Join parameters, ensuring they are strings and sanitized
-    final_log_name_parts = []
-    for p_val_str in params:
-        # Sanitize common problematic characters for filenames
-        s_val = str(p_val_str).replace(':', '_').replace('[', '').replace(']', '').replace(',', '-').replace("'", "")
-        s_val = s_val.replace(' ', '').replace('/', '_').replace('..', '') # Remove spaces, replace slashes
-        if s_val: # Add only if it's not an empty string after processing
-            final_log_name_parts.append(s_val)
-            
-    return '_'.join(final_log_name_parts).strip('_')
-
 def setup_model_path(args):
-    import datetime
-    if len(args.datasets.split(',')) > 1:
-        folder_name = 'SP5'
-    else:
-        folder_name = args.datasets
-    # Get the current timestamp
-    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    args.model_path = os.path.join(args.model_dir, f"{folder_name}_id_{args.id_epochs}_rec_{args.rec_epochs}_{timestamp}")
-    from pathlib import Path
+    # Example model dir: idgenrec_singlegpu/model/lastfm4i/2id2rec_experiment
+    args.model_path = os.path.join(args.model_dir, args.datasets, args.run_id)
+    Path(args.model_dir).mkdir(parents=True, exist_ok=True)
     Path(args.model_path).mkdir(parents=True, exist_ok=True)
     return
     
@@ -220,3 +217,52 @@ def load_model(model, path, args, loc=None):
     state_dict = torch.load(path, map_location=loc)
     model.load_state_dict(state_dict, strict=False)
     return model
+
+def setup_wandb(args):
+    if args.use_wandb:
+        wandb.init(
+            entity="trungnguyen0710vn-singapore-management-university",
+            project="idgenrec-social-enhanced",
+            name=args.run_id,
+        )
+    return
+
+def insert_phrases_batch(prompt, positions, hist, max_input_len):
+    """
+    prompt: [batch_size, seq_len, emb_size] - embedding of the template sentence
+    hist: [batch_size, phrase_num, 10, emb_size] - embeddings of the hist
+    positions: [batch_size, seq_len] - binary tensor where "1" indicates insertion points
+    max_input_len: int - the maximum length after processing
+    """
+    batch_size, seq_len, emb_size = prompt.shape
+    
+    batch_results = []
+    
+    # Iterate through each example in the batch
+    for b in range(batch_size):
+        result = []
+        hist_idx = 0
+
+        for i in range(seq_len):
+            if positions[b, i] == 1:
+                result.append(prompt[b, i].unsqueeze(0))  
+                result.append(hist[b, hist_idx])
+                hist_idx += 1
+            else:
+                result.append(prompt[b, i].unsqueeze(0))
+
+        result_tensor = torch.cat(result, dim=0)
+        
+        # Pad the tensor to max_input_len
+        pad_size = max_input_len - result_tensor.shape[0]
+        pad_tensor = torch.zeros((pad_size, emb_size), device=prompt.device)
+        result_tensor = torch.cat([result_tensor, pad_tensor], dim=0)
+        
+        batch_results.append(result_tensor)
+
+    # Concatenate batch_results to get final tensor
+    final_tensor = torch.stack(batch_results, dim=0)
+    
+    return final_tensor
+
+
