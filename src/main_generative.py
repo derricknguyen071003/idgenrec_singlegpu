@@ -72,7 +72,8 @@ def single_main():
             train_loader_rec=train_loader_rec_item,
             device=item_device,
             args=args,
-            component = 'item_rec'
+            component = 'item_rec',
+            other_view_model=model_social  # Pass social model for KL divergence
         )
         runner_friend = SingleRunner(
             model_gen=model_gen_friend,
@@ -82,7 +83,8 @@ def single_main():
             train_loader_rec=train_loader_rec_friend,
             device=item_device,
             args=args,
-            component = 'friend_rec'
+            component = 'friend_rec',
+            other_view_model=model_rec  # Pass item model for KL divergence
         )
     elif args.run_type == '2id1rec':
         logging.info("Running 2id1rec")
@@ -108,7 +110,8 @@ def single_main():
             train_loader_rec=train_loader_rec_item,
             device=item_device,
             args=args,
-            component='item_view'
+            component='item_view',
+            other_view_model=model_rec  # For 2id1rec, both views use same model_rec, so pass it for symmetry
         )
         runner_social = SingleRunner(
             model_gen=model_gen_social,
@@ -118,7 +121,8 @@ def single_main():
             train_loader_rec=train_loader_rec_social,
             device=item_device,
             args=args,
-            component='social_view'
+            component='social_view',
+            other_view_model=model_rec  # For 2id1rec, both views use same model_rec
         )
     elif args.run_type == 'original_idgenrec':
         TrainSetID_item, TrainSetRec = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False)       

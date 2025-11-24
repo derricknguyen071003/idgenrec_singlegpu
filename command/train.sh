@@ -28,8 +28,8 @@ if [[ "$datasets" == "lastfm_full_10_10" || "$datasets" == "deli_full_10_10" || 
     rec_batch_size=32
     social_batch_size=32
   else
-    id_batch_size=64
-    rec_batch_size=64
+    id_batch_size=128
+    rec_batch_size=128
     social_batch_size=32
   fi
   echo "Using id_batch_size $id_batch_size and rec_batch_size $rec_batch_size and social_batch_size $social_batch_size"

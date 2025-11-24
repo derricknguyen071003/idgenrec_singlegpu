@@ -127,6 +127,8 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
             logging.info(f"TrainSetID (idgenrec friendrec): {len(TrainSetID)}")
             logging.info(f"TrainSetRec (idgenrec friendrec): {len(TrainSetRec)}")
             return TrainSetID, TrainSetRec
+        else:
+            raise ValueError(f"run_type '2id2rec' requires component to be 'item_rec' or 'friend_rec', got: {component}")
     elif args.run_type == '2id2rec_socialtoid':
         if component == 'item_rec':
             logging.info("Train IDGenerator on item rec (item+social to id)")
@@ -162,6 +164,8 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
             logging.info(f"TrainSetID (idgenrec friendrec): {len(TrainSetID)}")
             logging.info(f"TrainSetRec (idgenrec friendrec): {len(TrainSetRec)}")
             return TrainSetID, TrainSetRec
+        else:
+            raise ValueError(f"run_type '2id2rec_socialtoid' requires component to be 'item_rec' or 'friend_rec', got: {component}")
     elif args.run_type == '2id1rec':
         if component == 'item_view':
             logging.info("Train IDGenerator on item view")
@@ -191,6 +195,8 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
             logging.info(f"TrainSetID (social view): {len(TrainSetID)}")
             logging.info(f"TrainSetRec (social view): {len(TrainSetRec)}")
             return TrainSetID, TrainSetRec
+        else:
+            raise ValueError(f"run_type '2id1rec' requires component to be 'item_view' or 'social_view', got: {component}")
     elif args.run_type == 'idgenrec_friend':
         logging.info("Train IDGenerator on friend rec")
         train_all_datasets_id = []
@@ -234,6 +240,9 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
         logging.info(f"TrainSetID (item to rec friendrec): {len(TrainSetID)}")
         logging.info(f"TrainSetRec (item to rec friendrec): {len(TrainSetRec)}")
         return TrainSetID, TrainSetRec
+    else:
+        raise ValueError(f"Unsupported run_type: {args.run_type}. Supported types: 'original_idgenrec', 'social_to_rec', 'social_to_id', 'social_to_both', '1id2rec', '2id2rec', '2id2rec_socialtoid', '2id1rec', 'idgenrec_friend', 'item_to_id_friendrec', 'item_to_rec_friendrec'")
+
 def get_loader(args, tokenizer, TrainSetID, TrainSetRec, TrainSetRecSocial=None, TrainSetSocial=None):
     collator_gen = CollatorGen(tokenizer)
     collator_rec = Collator(tokenizer, args=args)
@@ -249,46 +258,46 @@ def get_loader(args, tokenizer, TrainSetID, TrainSetRec, TrainSetRecSocial=None,
         train_loader_id = DataLoader(dataset=TrainSetID, sampler=train_sampler_id, batch_size=args.id_batch_size, collate_fn=collator_gen, shuffle=False, num_workers=num_workers, pin_memory=True, prefetch_factor=prefetch_factor, persistent_workers=num_workers > 0)
         
         # Show tokenized sequence for TrainSetID example
-        if len(TrainSetID) > 0:
-            sample_id = TrainSetID[0]
-            logging.info("=" * 80)
-            logging.info("TrainSetID Sample - Tokenized Sequence:")
-            logging.info(f"Original sample: {sample_id}")
-            batch_id = collator_gen([sample_id])
-            input_prompt_ids, input_insert_pos, history_ids, history_attention, output_ids, output_attention = batch_id
-            input_tokens = tokenizer.convert_ids_to_tokens(input_prompt_ids[0].tolist())
-            output_tokens = tokenizer.convert_ids_to_tokens(output_ids[0].tolist())
-            logging.info(f"Input prompt tokens: {input_tokens}")
-            logging.info(f"Input prompt token IDs: {input_prompt_ids[0].tolist()}")
-            logging.info(f"Output prompt tokens: {output_tokens}")
-            logging.info(f"Output prompt token IDs: {output_ids[0].tolist()}")
-            if history_ids.shape[1] > 0 and history_ids.shape[2] > 0:
-                history_tokens = tokenizer.convert_ids_to_tokens(history_ids[0][0].tolist())
-                logging.info(f"History tokens (first item): {history_tokens}")
-            logging.info("=" * 80)
+        # if len(TrainSetID) > 0:
+        #     sample_id = TrainSetID[0]
+        #     logging.info("=" * 80)
+        #     logging.info("TrainSetID Sample - Tokenized Sequence:")
+        #     logging.info(f"Original sample: {sample_id}")
+        #     batch_id = collator_gen([sample_id])
+        #     input_prompt_ids, input_insert_pos, history_ids, history_attention, output_ids, output_attention = batch_id
+        #     input_tokens = tokenizer.convert_ids_to_tokens(input_prompt_ids[0].tolist())
+        #     output_tokens = tokenizer.convert_ids_to_tokens(output_ids[0].tolist())
+        #     logging.info(f"Input prompt tokens: {input_tokens}")
+        #     logging.info(f"Input prompt token IDs: {input_prompt_ids[0].tolist()}")
+        #     logging.info(f"Output prompt tokens: {output_tokens}")
+        #     logging.info(f"Output prompt token IDs: {output_ids[0].tolist()}")
+        #     if history_ids.shape[1] > 0 and history_ids.shape[2] > 0:
+        #         history_tokens = tokenizer.convert_ids_to_tokens(history_ids[0][0].tolist())
+        #         logging.info(f"History tokens (first item): {history_tokens}")
+        #     logging.info("=" * 80)
     
     if TrainSetRec is not None:
         train_sampler_rec = SingleMultiDataTaskSampler(TrainSetRec, args.rec_batch_size, args.seed, shuffle=True) 
         train_loader_rec = DataLoader(dataset=TrainSetRec, sampler=train_sampler_rec, batch_size=args.rec_batch_size, collate_fn=collator_rec, shuffle=False, num_workers=num_workers, pin_memory=True, prefetch_factor=prefetch_factor, persistent_workers=num_workers > 0)
         
         # Show tokenized sequence for TrainSetRec example
-        if len(TrainSetRec) > 0:
-            sample_rec = TrainSetRec[0]
-            logging.info("=" * 80)
-            logging.info("TrainSetRec Sample - Tokenized Sequence:")
-            logging.info(f"Original sample: {sample_rec}")
-            batch_rec = collator_rec([sample_rec])
-            if len(batch_rec) > 5:
-                input_ids, input_attention, whole_word_ids, output_ids, output_attention, timesteps, noise_masks = batch_rec
-            else:
-                input_ids, input_attention, whole_word_ids, output_ids, output_attention = batch_rec
-            input_tokens = tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
-            output_tokens = tokenizer.convert_ids_to_tokens(output_ids[0].tolist())
-            logging.info(f"Input tokens: {input_tokens}")
-            logging.info(f"Input token IDs: {input_ids[0].tolist()}")
-            logging.info(f"Output tokens: {output_tokens}")
-            logging.info(f"Output token IDs: {output_ids[0].tolist()}")
-            logging.info("=" * 80)
+        # if len(TrainSetRec) > 0:
+        #     sample_rec = TrainSetRec[0]
+        #     logging.info("=" * 80)
+        #     logging.info("TrainSetRec Sample - Tokenized Sequence:")
+        #     logging.info(f"Original sample: {sample_rec}")
+        #     batch_rec = collator_rec([sample_rec])
+        #     if len(batch_rec) > 5:
+        #         input_ids, input_attention, whole_word_ids, output_ids, output_attention, timesteps, noise_masks = batch_rec
+        #     else:
+        #         input_ids, input_attention, whole_word_ids, output_ids, output_attention = batch_rec
+        #     input_tokens = tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
+        #     output_tokens = tokenizer.convert_ids_to_tokens(output_ids[0].tolist())
+        #     logging.info(f"Input tokens: {input_tokens}")
+        #     logging.info(f"Input token IDs: {input_ids[0].tolist()}")
+        #     logging.info(f"Output tokens: {output_tokens}")
+        #     logging.info(f"Output token IDs: {output_ids[0].tolist()}")
+        #     logging.info("=" * 80)
     
     if args.run_type == '1id2rec' and TrainSetSocial is not None and TrainSetRecSocial is not None:
         collator_social = CollatorGen(tokenizer)

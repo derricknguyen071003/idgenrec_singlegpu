@@ -220,10 +220,20 @@ def load_model(model, path, args, loc=None):
 
 def setup_wandb(args):
     if args.use_wandb:
+        # Get the absolute path to the project root
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent.parent  # src/utils/utils.py -> project root
+        
         wandb.init(
             entity="trungnguyen0710vn-singapore-management-university",
             project="idgenrec-social-enhanced",
             name=args.run_id,
+        )
+        
+        # Save only SingleRunner.py
+        wandb.run.log_code(
+            root=str(project_root),
+            include_fn=lambda path: "SingleRunner.py" in path
         )
     return
 

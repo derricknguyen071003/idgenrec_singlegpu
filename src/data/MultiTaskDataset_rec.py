@@ -80,11 +80,6 @@ class MultiTaskDatasetRec(Dataset):
                     # Try to load social friend sequence with generated IDs
                     social_suffix = '_social'
                     social_user_index_file = os.path.join(run_dir, f'user_generative_index_phase_{phase}{social_suffix}.txt')
-                    
-                    if not os.path.exists(social_user_index_file):
-                        # Try without suffix as fallback
-                        social_user_index_file = os.path.join(run_dir, f'user_generative_index_phase_{phase}.txt')
-                    
                     if os.path.exists(social_user_index_file):
                         social_user_dict = indexing.get_dict_from_lines(utils.ReadLineFromFile(social_user_index_file))
                         # Load friend sequence to get social tokens per user
@@ -95,16 +90,14 @@ class MultiTaskDatasetRec(Dataset):
                             if orig_uid in social_user_dict:
                                 # Get social tokens for this user's friends
                                 social_tokens = []
-                                for friend in friends[:-2]:  # Training friends only (exclude validation and test)
+                                for friend in friends[:-2]:  # Training friends only
                                     if friend in social_user_dict:
                                         social_tokens.append(social_user_dict[friend])
                                 if social_tokens:
                                     self.cross_view_dict[orig_uid] = ' '.join(social_tokens)
                         logging.info(f"(MultiTaskDatasetRec) Loaded cross-view (social) tokens for {len(self.cross_view_dict)} users")
-                    else:
-                        logging.warning(f"(MultiTaskDatasetRec) Social user index file not found: {social_user_index_file}. Cross-view tokens will not be available.")
                 except Exception as e:
-                    logging.warning(f"(MultiTaskDatasetRec) Could not load cross-view tokens: {e}. Will fall back to random noise.")
+                    logging.warning(f"(MultiTaskDatasetRec) Could not load cross-view tokens: {e}")
         
         self.data_samples = self.load_train()
         self.valid_data_samples = self.load_validation()
