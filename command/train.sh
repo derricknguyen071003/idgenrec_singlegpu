@@ -1,7 +1,7 @@
 item_gpu=${item_gpu:-3}
 datasets=${datasets}
 run_id=${run_id}
-use_diffusion=${use_diffusion:-1}
+use_diffusion=${use_diffusion:-0}
 run_type=${run_type}
 social_quantization_id=${social_quantization_id:-0}
 rounds=${rounds:-2}
@@ -11,8 +11,9 @@ use_wandb=${use_wandb:-1}
 use_friend_seq=${use_friend_seq:-0}
 random_remove_friend=${random_remove_friend:-0.0}
 sample_num=${sample_num:-1}
-socialtoid_mode=${socialtoid_mode:-"sequential"}
+socialtoid_mode=${socialtoid_mode:-"sequential"}  
 social_sample_prompt=${social_sample_prompt:-1}
+gradient_accumulation_steps=${gradient_accumulation_steps:-4}
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=false
 
@@ -23,15 +24,19 @@ if [[ "$datasets" == "yelp_30_2_5" ]]; then
   echo "Using id_batch_size $id_batch_size and rec_batch_size $rec_batch_size and social_batch_size $social_batch_size"
 fi
 if [[ "$datasets" == "lastfm_full_10_10" || "$datasets" == "deli_full_10_10" || "$datasets" == "lastfm4i" ]]; then
-  if [[ "$run_type" == "idgenrec_friend" || "$run_type" == "2id2rec" || "$run_type" == "social_to_id" || "$run_type" == "social_to_rec" || "$run_type" == "item_to_id_friendrec" || "$run_type" == "2id2rec_socialtoid" ]]; then
-    id_batch_size=32
+  # if [[ "$run_type" == "idgenrec_friend"|| "$run_type" == "social_to_id" || "$run_type" == "social_to_rec" || "$run_type" == "item_to_id_friendrec" ]]; then
+  #   id_batch_size=32
+  #   rec_batch_size=32
+  #   social_batch_size=32
+  # elif [[ "$run_type" == "2id2rec_socialtoid" || "$run_type" == "2id2rec" ]]; then
+    id_batch_size=16
     rec_batch_size=32
-    social_batch_size=32
-  else
-    id_batch_size=128
-    rec_batch_size=128
-    social_batch_size=32
-  fi
+    social_batch_size=16
+  # else
+  #   id_batch_size=128
+  #   rec_batch_size=128
+  #   social_batch_size=32
+  #fi
   echo "Using id_batch_size $id_batch_size and rec_batch_size $rec_batch_size and social_batch_size $social_batch_size"
 fi
 
@@ -62,7 +67,7 @@ python ../src/main_generative.py --datasets $datasets \
   --id_lr 1e-8 \
   --id_epochs 1 \
   --rec_epochs 10 \
-  --gradient_accumulation_steps 1 \
+  --gradient_accumulation_steps ${gradient_accumulation_steps:-1} \
   --use_wandb $use_wandb \
   --social_quantization_id $social_quantization_id \
   --use_diffusion $use_diffusion
