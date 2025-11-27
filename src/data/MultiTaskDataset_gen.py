@@ -39,9 +39,9 @@ class MultiTaskDatasetGen(Dataset):
         self.user_sequence = utils.ReadLineFromFile(os.path.join(self.data_path, self.dataset, 'user_sequence.txt'))
         self.user_sequence_dict = indexing.construct_user_sequence_dict(self.user_sequence)  
         if args.run_type == '2id2rec' or args.run_type == '2id2rec_socialtoid':
-            self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_id(self.data_path, self.dataset, self.user_sequence_dict, phase, run_id=args.run_id, component=self.component, run_type=args.run_type)
+            self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_id(self.data_path, self.dataset, self.user_sequence_dict, phase, run_id=args.run_id, component=self.component, run_type=args.run_type, social_quantization_id=self.args.social_quantization_id)
         else:
-            self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_id(self.data_path, self.dataset, self.user_sequence_dict, phase, run_id=args.run_id, component=self.component)
+            self.reindex_user_seq_dict, self.item_map = indexing.generative_indexing_id(self.data_path, self.dataset, self.user_sequence_dict, phase, run_id=args.run_id, component=self.component, social_quantization_id=self.args.social_quantization_id)
         self.reindex_user_seq_dict_rec, self.item_map_rec = self.reindex_user_seq_dict, self.item_map
         logging.info("Reindex GEN data (item_id) with generative indexing method (single GPU)")
         if args.social_quantization_id:
@@ -101,7 +101,7 @@ class MultiTaskDatasetGen(Dataset):
         Load training data samples
         """
         data_samples = []
-        for user in tqdm(self.reindex_user_seq_dict, desc="Loading training data samples"):
+        for user in self.reindex_user_seq_dict:
             items = self.reindex_user_seq_dict[user][:-2]
             items_rec = self.reindex_user_seq_dict_rec[user][:-2]
             for i in range(len(items)):

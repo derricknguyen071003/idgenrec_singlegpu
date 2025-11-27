@@ -26,6 +26,7 @@ def parse_global_args(parser):
     parser.add_argument("--eval_batch_size", type=int, default=1, help="batch size for evaluation")
     parser.add_argument("--batch_size", type=int, default=32, help="batch size")
     parser.add_argument("--num_workers", type=int, default=8, help="number of data loading workers for DataLoader (8 is more stable than 16)")
+    parser.add_argument("--prefetch_factor", type=int, default=32, help="prefetch factor for DataLoader")
     parser.add_argument("--train", type=int, default=1, help='Train or not (1 for train, 0 for no train)')
     
     # Model paths
@@ -40,7 +41,7 @@ def parse_global_args(parser):
     parser.add_argument("--optim", type=str, default='AdamW', help='The name of the optimizer')
     parser.add_argument("--clip", type=float, default=1.0, help="Gradient clipping value")
     parser.add_argument("--warmup_prop", type=float, default=0.05, help="Warmup proportion for scheduler")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--adam_eps", type=float, default=1e-6)
     
@@ -230,10 +231,10 @@ def setup_wandb(args):
             name=args.run_id,
         )
         
-        # Save only SingleRunner.py
+        # Save all Python files in the codebase
         wandb.run.log_code(
             root=str(project_root),
-            include_fn=lambda path: "SingleRunner.py" in path
+            include_fn=lambda path: path.endswith('.py')
         )
     return
 

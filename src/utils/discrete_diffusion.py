@@ -4,16 +4,6 @@ import logging
 from typing import Optional, Tuple, Union
 
 def add_timestep_tokens_to_tokenizer(tokenizer, num_timesteps: int):
-    """
-    Add timestep tokens to tokenizer for diffusion conditioning.
-    
-    Args:
-        tokenizer: Tokenizer to add tokens to
-        num_timesteps: Number of timestep tokens to add (T)
-    
-    Returns:
-        Dictionary mapping timestep index to token ID
-    """
     timestep_tokens = [f"[TIMESTEP_{i}]" for i in range(num_timesteps)]
     tokenizer.add_tokens(timestep_tokens, special_tokens=True)
     timestep_token_ids = {
@@ -30,18 +20,6 @@ def prepend_timestep_token(
     timestep_token_ids: dict,
     attention_mask: torch.Tensor
 ) -> tuple:
-    """
-    Prepend timestep token to input sequence for diffusion conditioning.
-    
-    Args:
-        input_ids: Input token IDs [batch_size, seq_len]
-        timesteps: Timestep values for each sample [batch_size]
-        timestep_token_ids: Dictionary mapping timestep to token ID
-        attention_mask: Attention mask [batch_size, seq_len]
-    
-    Returns:
-        Tuple of (new_input_ids, new_attention_mask) with timestep token prepended
-    """
     batch_size = input_ids.shape[0]
     device = input_ids.device
     timestep_token_ids_tensor = torch.tensor(
@@ -57,10 +35,6 @@ def prepend_timestep_token(
 
 class DiscreteDiffusionScheduler:
     def __init__(self, num_timesteps: int = 100, beta_max: float = 0.1):
-        """
-        num_timesteps: total diffusion steps T
-        beta_max: max per-step corruption β_T
-        """
         self.num_timesteps = num_timesteps
         self.betas = torch.linspace(0, beta_max, num_timesteps)  # β_t
         self.alpha_bars = self._compute_alpha_bars()             # \bar α_t
@@ -72,9 +46,6 @@ class DiscreteDiffusionScheduler:
     def get_alpha_bar(self, t: Union[int, torch.Tensor]) -> torch.Tensor:
         t = torch.as_tensor(t).clamp(0, self.num_timesteps - 1).long()
         return self.alpha_bars[t]
-
-    def sample_timestep(self, batch_size: int = 1, device: str = "cpu") -> torch.Tensor:
-        return torch.randint(0, self.num_timesteps, (batch_size,), device=device)
 
 
 def corrupt_sequence(
@@ -211,61 +182,6 @@ def compute_kl_divergence(
         raise ValueError(f"Unknown reduction: {reduction}")
 
 
-def compute_kl_divergence_from_probs(
-    p: torch.Tensor,
-    q: torch.Tensor,
-    epsilon: float = 1e-8,
-    reduction: str = 'mean'
-) -> torch.Tensor:
-    """
-    Compute KL divergence KL(P || Q) from probability distributions.
-    
-    Args:
-        p: Probability distribution P (item view)
-            Shape: [batch_size, vocab_size] or [batch_size, seq_len, vocab_size]
-        q: Probability distribution Q (social view)
-            Shape: [batch_size, vocab_size] or [batch_size, seq_len, vocab_size]
-        epsilon: Small value for numerical stability (default: 1e-8)
-        reduction: Reduction method ('mean', 'sum', or 'none')
-    
-    Returns:
-        kl_div: KL divergence KL(P || Q)
-    """
-    # Ensure probabilities are valid
-    p = torch.clamp(p, min=epsilon, max=1.0)
-    q = torch.clamp(q, min=epsilon, max=1.0)
-    
-    # Normalize to ensure they sum to 1
-    if p.dim() == 2:
-        p = p / p.sum(dim=-1, keepdim=True)
-        q = q / q.sum(dim=-1, keepdim=True)
-    elif p.dim() == 3:
-        p = p / p.sum(dim=-1, keepdim=True)
-        q = q / q.sum(dim=-1, keepdim=True)
-    
-    # Compute KL divergence
-    log_p = torch.log(p)
-    log_q = torch.log(q)
-    
-    kl_div = p * (log_p - log_q)
-    
-    # Sum over vocabulary dimension
-    if kl_div.dim() == 2:  # [batch_size, vocab_size]
-        kl_div = kl_div.sum(dim=-1)
-    elif kl_div.dim() == 3:  # [batch_size, seq_len, vocab_size]
-        kl_div = kl_div.sum(dim=-1)  # [batch_size, seq_len]
-    
-    # Apply reduction
-    if reduction == 'mean':
-        return kl_div.mean()
-    elif reduction == 'sum':
-        return kl_div.sum()
-    elif reduction == 'none':
-        return kl_div
-    else:
-        raise ValueError(f"Unknown reduction: {reduction}")
-
-
 class NoisePredictionHead(nn.Module):
     """
     Binary classification head for predicting noise mask.
@@ -348,27 +264,3 @@ def create_noise_head(model, hidden_dim: int = None, dropout: float = 0.1) -> No
     logging.info(f"Creating NoisePredictionHead with hidden_dim={hidden_dim}, dropout={dropout}")
     return NoisePredictionHead(hidden_dim=hidden_dim, dropout=dropout)
 
-
-if __name__ == "__main__":
-    scheduler = DiscreteDiffusionScheduler(num_timesteps=100, beta_max=0.1)
-    vocab_size = 1000
-    seq_len = 20
-    clean_seq = torch.tensor([938, 3, 19175, 8, 1139, 10191, 10191, 91, 3119, 9957, 2777, 3, 7, 2433, 21128, 1692, 3, 31, 3, 7, 1242, 13, 1173, 3, 6, 125, 19, 8, 416, 2118, 1644, 12, 36, 2944, 3, 58, 1], dtype=torch.long)
-    clean_seq = clean_seq.to(torch.device("cuda"))
-    cross_view_tokens = torch.tensor([3, 115, 17, 208, 7, 2948, 10191, 10191, 670, 3119, 1], dtype=torch.long)
-    cross_view_tokens = cross_view_tokens.to(torch.device("cuda"))
-    corrupted, mask = corrupt_sequence(
-        clean_seq,
-        timestep=50,
-        scheduler=scheduler,
-        vocab_size=vocab_size,
-        cross_view_tokens=cross_view_tokens,
-        cross_view_prob=0.5,
-        seed=2023
-    )
-
-    print(f"\nClean sequence:     {clean_seq}")
-    print(f"Cross-view tokens: {cross_view_tokens}")
-    print(f"Corrupted sequence: {corrupted}")
-    print(f"Noise mask:         {mask}")
-    print(f"Corruption rate:    {mask.float().mean():.2%}")

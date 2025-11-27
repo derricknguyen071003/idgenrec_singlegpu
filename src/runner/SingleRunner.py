@@ -1,39 +1,29 @@
 import torch
 import torch.nn.functional as F
 torch.cuda.empty_cache()
-from transformers import get_linear_schedule_with_warmup, T5Config, T5ForConditionalGeneration, AutoTokenizer, GenerationConfig
+from transformers import get_linear_schedule_with_warmup, T5Config, T5ForConditionalGeneration
 from torch.optim import AdamW
 import logging
-from tqdm import tqdm
 import wandb
 from utils import utils, evaluate 
-from data.TestDataset import TestDatasetGen
-from data.TestDataset_social import TestDatasetSocial
+from data.TestDataset import TestDatasetGen, TestDatasetSocial
 from torch.utils.data import DataLoader
 from processor.Collator import Collator, TestCollator 
 import numpy as np
 import os
 import string 
-import datetime
-from utils.generation_trie import Trie, prefix_allowed_tokens_fn
 import utils.generation_trie as gt
 from utils import indexing
 from utils.dataset_utils import get_dataset_generative, get_loader
 from transformers import T5Config, T5ForConditionalGeneration
-from utils.discrete_diffusion import (
-    add_timestep_tokens_to_tokenizer, 
-    prepend_timestep_token,
-    create_noise_head,
-    compute_kl_divergence,
-    compute_kl_divergence_from_probs
-)
+from utils.discrete_diffusion import add_timestep_tokens_to_tokenizer, prepend_timestep_token, create_noise_head, compute_kl_divergence
+
 
 
 class SingleRunner:
-
     def __init__(self, model_rec=None, model_gen=None, model_social=None, tokenizer=None, 
                  train_loader_id=None, train_loader_rec=None, train_loader_rec_social=None, train_loader_social=None,
-                 valid_loader=None, device=None, args=None, component=None, other_view_model=None):
+                 device=None, args=None, component=None, other_view_model=None):
         self.model_rec = model_rec.to(device) if model_rec else None
         self.model_gen = model_gen.to(device) if model_gen else None
         self.model_social = model_social.to(device) if model_social else None
@@ -43,7 +33,6 @@ class SingleRunner:
         self.train_loader_rec = train_loader_rec if train_loader_rec else None
         self.train_loader_rec_social = train_loader_rec_social if train_loader_rec_social else None
         self.train_loader_social = train_loader_social if train_loader_social else None
-        self.valid_loader = valid_loader 
         self.device = device
         self.args = args
         self.component = component if component is not None else None
@@ -54,7 +43,7 @@ class SingleRunner:
         self.generate_num = max([int(m.split('@')[1]) for m in self.metrics if '@' in m and len(m.split('@')) > 1] or [10])
         punctuation_tokens = [self.tokenizer.encode(p, add_special_tokens=False)[0] for p in string.punctuation]
         self.punctuation_tokens_tensor = torch.tensor(punctuation_tokens, device=self.device)        
-        self.use_diffusion = getattr(args, 'use_diffusion', 0)
+        self.use_diffusion = self.args.use_diffusion
         self.noise_head_rec = None
         self.noise_head_social = None
         self.id_optimizer, self.id_scheduler, self.rec_optimizer, self.rec_scheduler = self.create_optimizer_and_scheduler()
@@ -165,7 +154,7 @@ class SingleRunner:
             logging.info(f"ID Gen - Round {current_round_num + 1}, Epoch {id_epoch + 1}/{self.args.id_epochs}")
             self.train_loader_id.sampler.set_epoch(self.global_epoch_tracker)
             epoch_losses = []
-            for batch in self.train_loader_id:
+            for batch_idx, batch in enumerate(self.train_loader_id):
                 input_prompt_ids = batch[0].to(self.device, non_blocking=True) 
                 input_prompt_positions = batch[1].to(self.device, non_blocking=True)
                 hist_ids = batch[2].to(self.device, non_blocking=True)
@@ -175,8 +164,6 @@ class SingleRunner:
                 hist_size = hist_ids.shape[1]
                 input_tensor = hist_ids.view(-1, hist_ids.shape[-1])
                 hist_att_flat = hist_att.view(-1, hist_att.shape[-1])
-                
-                # Generate with gradient tracking
                 output = self.model_gen.generate_with_grad(
                             input_tensor,
                             attention_mask=hist_att_flat, 
@@ -188,100 +175,54 @@ class SingleRunner:
                             output_hidden_states=False,
                             renormalize_logits=True,
                         )
-                # Memory-efficient processing: compute embeddings timestep by timestep
-                # instead of concatenating all scores first
                 scores = output['scores']
                 train_id_token_size = len(scores)
                 token_embeddings = self.model_rec.shared.weight
-                embedding_dim = token_embeddings.shape[1]
-                
-                # Process each timestep separately to reduce peak memory
+                embedding_dim = token_embeddings.shape[1]       
                 hist_embeddings_list = []
                 temp_ids = output['sequences'][:, 1:]  # [batch*hist_size, seq_len-1]
-                
                 for t in range(train_id_token_size):
-                    # Get logits for this timestep: [batch*hist_size, vocab_size]
                     logits_t = scores[t]
-                    
-                    # Compute embeddings using matmul (more memory efficient than einsum)
-                    # matmul is equivalent to einsum('bsv,ve->bse') for single timestep
                     embeds_t = torch.matmul(logits_t, token_embeddings)  # [batch*hist_size, embedding_dim]
                     hist_embeddings_list.append(embeds_t)
-                    #del logits_t  # Clear logits, but keep embeds_t in list for stacking
-                
-                # Stack along sequence dimension: [batch*hist_size, seq_len, embedding_dim]
                 hist_embeddings_flat = torch.stack(hist_embeddings_list, dim=1)
-                #del hist_embeddings_list
-                
-                # Reshape to [batch_size, hist_size, seq_len, embedding_dim]
                 hist_embeddings = hist_embeddings_flat.view(batch_size, hist_size, train_id_token_size, embedding_dim)
-                #del hist_embeddings_flat
-                
-                # Apply punctuation mask more efficiently (avoid expand_as)
                 punctuation_mask = utils.torch_isin(temp_ids, self.punctuation_tokens_tensor)
                 punctuation_mask = punctuation_mask.view(batch_size, hist_size, train_id_token_size)
-                # Use broadcasting instead of expand_as to avoid large temporary tensor
-                # Set to 0 where punctuation_mask is True (punctuation tokens)
                 hist_embeddings = hist_embeddings * (~punctuation_mask).unsqueeze(-1).float()
-                #del punctuation_mask, temp_ids
-                
-                # Get prompt embeddings
                 input_prompt_embeddings = token_embeddings[input_prompt_ids]
                 max_prompt_size = input_prompt_embeddings.shape[1]
                 max_hist_num = hist_ids.shape[1] 
-                max_input_len = max_prompt_size + max_hist_num * train_id_token_size 
-                
-                # Insert phrases (memory-intensive, but necessary)
+                max_input_len = max_prompt_size + max_hist_num * train_id_token_size                 
                 final_input = utils.insert_phrases_batch(input_prompt_embeddings, input_prompt_positions, hist_embeddings, max_input_len)
-                
-                # Compute attention mask more efficiently
-                # Use sum of squares instead of norm to avoid sqrt computation
-                norms_sq = (final_input ** 2).sum(dim=-1)  # [batch_size, max_input_len]
-                attention_mask = (norms_sq > 1e-12).long()  # Equivalent to norm > 1e-6
-                #del norms_sq
+                norms_sq = (final_input ** 2).sum(dim=-1)
+                attention_mask = (norms_sq > 1e-12).long()
                 output = self.model_rec(
                     inputs_embeds=final_input, 
                     attention_mask=attention_mask,
                     labels=output_ids,
                     return_dict=True,
                 )
-                loss = output["loss"]
+                loss = output["loss"] / self.args.gradient_accumulation_steps
                 loss.backward()
+                epoch_losses.append(loss.item() * self.args.gradient_accumulation_steps)
+                if (batch_idx + 1) % self.args.gradient_accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(self.model_gen.parameters(), self.args.clip)
+                    self.id_optimizer.step()
+                    self.id_scheduler.step()
+                    self.model_gen.zero_grad()
+                    self.model_rec.zero_grad()
+            if (batch_idx + 1) % self.args.gradient_accumulation_steps != 0:
                 torch.nn.utils.clip_grad_norm_(self.model_gen.parameters(), self.args.clip)
                 self.id_optimizer.step()
                 self.id_scheduler.step()
                 self.model_gen.zero_grad()
                 self.model_rec.zero_grad()
-                
-                # Store loss before cleanup
-                loss_value = loss.item()
-                epoch_losses.append(loss_value)
-                
-                # Incremental memory cleanup to smooth out memory fluctuations
-                # Delete tensors in stages to avoid sudden memory drops
-                # Stage 1: Clear generation outputs (largest tensors first)
-                # del output, loss
-                # del scores, hist_embeddings  # scores from generation, hist_embeddings from processing
-                
-                # # Stage 2: Clear intermediate computations
-                # # Note: temp_ids and punctuation_mask already deleted earlier (line 226)
-                # del input_tensor, hist_att_flat
-                # del input_prompt_embeddings, final_input, attention_mask
-                
-                # # Stage 3: Clear batch reference (DataLoader will handle prefetched batches)
-                # del batch
-                
-                # Only clear cache when memory pressure is high (less frequent, smoother)
-                # This reduces sudden memory drops while still preventing OOM
-                # if len(epoch_losses) % 10 == 0:
-                #     torch.cuda.empty_cache()
-            
             avg_epoch_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else float('nan')
             logging.info(f"ID Gen - Avg Loss Round {current_round_num+1} Epoch {id_epoch+1}: {avg_epoch_loss:.4f}")
             wandb.log({
                 "id_gen/loss": avg_epoch_loss
             })
-
             self.global_epoch_tracker += 1
             self.total_id_epoch +=1
 
@@ -307,8 +248,7 @@ class SingleRunner:
             epoch_losses_kl = []
             corruption_rates = []
             avg_timesteps = []
-            
-            for batch in self.train_loader_rec:
+            for batch_idx, batch in enumerate(self.train_loader_rec):
                 input_ids = batch[0].to(self.device, non_blocking=True)
                 attn_mask = batch[1].to(self.device, non_blocking=True)
                 output_ids = batch[3].to(self.device, non_blocking=True)
@@ -319,16 +259,8 @@ class SingleRunner:
                         input_ids, timesteps, self.timestep_token_ids, attn_mask
                     )
                 token_embeddings = self.model_rec.shared.weight
-                input_embeds = token_embeddings[input_ids]               
-                # Forward for noise prediction head
-                encoder_outputs = self.model_rec.encoder(
-                    inputs_embeds=input_embeds,
-                    attention_mask=attn_mask,
-                    return_dict=True
-                )
-                encoder_hidden_states = encoder_outputs.last_hidden_state  # [batch_size, seq_len, hidden_dim]
-                
-                # Standard CE loss for next-ID prediction
+                input_embeds = token_embeddings[input_ids]  
+                # CE loss for next-ID prediction
                 output = self.model_rec(
                     inputs_embeds=input_embeds,
                     attention_mask=attn_mask,
@@ -336,19 +268,22 @@ class SingleRunner:
                     return_dict=True,
                 )
                 loss_ce = output.loss
-                
-                # Noise mask prediction (BCE loss) if diffusion is enabled
+                # BCE loss for noise mask prediction
                 loss_bce = torch.tensor(0.0, device=self.device)
                 if self.use_diffusion and self.noise_head_rec is not None and noise_masks is not None:
-                    # Get noise logits from noise head
+                    encoder_outputs = self.model_rec.encoder(
+                        inputs_embeds=input_embeds,
+                        attention_mask=attn_mask,
+                        return_dict=True
+                    )
+                    encoder_hidden_states = encoder_outputs.last_hidden_state  # [batch_size, seq_len, hidden_dim]
+                    noise_logits = None
+                    noise_logits_aligned = None
+                    noise_masks_aligned = None
+                    other_output = None   
                     noise_logits = self.noise_head_rec(encoder_hidden_states)  # [batch_size, seq_len]
-                    
-                    # Align noise_masks with noise_logits (account for prepended timestep token)
                     if timesteps is not None:
-                        # noise_masks doesn't include timestep token, so we need to align
-                        # noise_logits has timestep token at position 0, noise_masks doesn't
                         noise_logits_aligned = noise_logits[:, 1:]  # Remove timestep token position
-                        # Ensure same length
                         min_len = min(noise_logits_aligned.shape[1], noise_masks.shape[1])
                         noise_logits_aligned = noise_logits_aligned[:, :min_len]
                         noise_masks_aligned = noise_masks[:, :min_len]
@@ -356,71 +291,51 @@ class SingleRunner:
                         min_len = min(noise_logits.shape[1], noise_masks.shape[1])
                         noise_logits_aligned = noise_logits[:, :min_len]
                         noise_masks_aligned = noise_masks[:, :min_len]
-                    
-                    # Compute BCE loss
                     loss_bce = F.binary_cross_entropy_with_logits(
                         noise_logits_aligned,
                         noise_masks_aligned.float(),
                         reduction='mean'
                     )
-                
-                # KL divergence loss: KL(p_current || p_other)
+                # KL divergence loss for aligning friend and item preferences.
                 loss_kl = torch.tensor(0.0, device=self.device)
-                # Check if we have access to the other view model (either model_social in same runner or other_view_model from different runner)
-                other_model = self.model_social if self.model_social is not None else self.other_view_model
-                
-                if self.use_diffusion and other_model is not None:
-                    # Get logits from current view (already computed above)
-                    current_logits = output.logits  # [batch_size, output_seq_len, vocab_size]
-                    
-                    # Get other view predictions for the same input
-                    # Note: other_model needs to be in training mode if we want gradients
-                    other_output = other_model(
+                if self.use_diffusion and self.other_view_model is not None:
+                    other_output = self.other_view_model(
                         inputs_embeds=input_embeds,
                         attention_mask=attn_mask,
                         labels=output_ids,
                         return_dict=True,
                     )
+                    current_logits = output.logits  # [batch_size, output_seq_len, vocab_size]
                     other_logits = other_output.logits  # [batch_size, output_seq_len, vocab_size]
-                    
-                    # Align sequence lengths if needed
                     min_seq_len = min(current_logits.shape[1], other_logits.shape[1])
                     current_logits_aligned = current_logits[:, :min_seq_len, :]  # [batch_size, min_seq_len, vocab_size]
                     other_logits_aligned = other_logits[:, :min_seq_len, :]  # [batch_size, min_seq_len, vocab_size]
-                    
-                    # Compute KL divergence: KL(p_current || p_other)
-                    # For item view: KL(p_item || p_social)
-                    # For social view: KL(p_social || p_item)
-                    # Using compute_kl_divergence which handles logits directly
                     loss_kl = compute_kl_divergence(
-                        logits_p=current_logits_aligned,  # Current view (P)
-                        logits_q=other_logits_aligned,  # Other view (Q)
+                        logits_p=current_logits_aligned,  
+                        logits_q=other_logits_aligned,
                         temperature=1.0,
                         epsilon=1e-8,
                         reduction='mean'
                     )
                 
-                # Combine losses
-                lambda_mask = getattr(self.args, 'lambda_mask', 0.1)
-                lambda_kl = getattr(self.args, 'lambda_kl', 0.1)
-                loss = loss_ce + lambda_mask * loss_bce + lambda_kl * loss_kl
-                
+                # Total loss 
+                loss = (loss_ce + self.args.lambda_mask * loss_bce + self.args.lambda_kl * loss_kl) / self.args.gradient_accumulation_steps
                 loss.backward()
-                
-                # Gradient clipping (include noise head if present)
-                params_to_clip = list(self.model_rec.parameters())
-                if self.use_diffusion and self.noise_head_rec is not None:
-                    params_to_clip.extend(self.noise_head_rec.parameters())
-                torch.nn.utils.clip_grad_norm_(params_to_clip, self.args.clip)
-                
-                self.rec_optimizer.step()
-                self.rec_scheduler.step()
-                self.model_rec.zero_grad()
-                self.model_gen.zero_grad()
-                if self.use_diffusion and self.noise_head_rec is not None:
-                    self.noise_head_rec.zero_grad()
-
                 epoch_losses_ce.append(loss_ce.item())
+                
+                if (batch_idx + 1) % self.args.gradient_accumulation_steps == 0:
+                    params_to_clip = list(self.model_rec.parameters())
+                    if self.use_diffusion and self.noise_head_rec is not None:
+                        params_to_clip.extend(self.noise_head_rec.parameters())
+                    torch.nn.utils.clip_grad_norm_(params_to_clip, self.args.clip)
+                    self.rec_optimizer.step()
+                    self.rec_scheduler.step()
+                    self.model_rec.zero_grad()
+                    self.model_gen.zero_grad()
+                    if self.use_diffusion and self.noise_head_rec is not None:
+                        self.noise_head_rec.zero_grad()
+                    if self.use_diffusion and self.other_view_model is not None:
+                        self.other_view_model.zero_grad()
                 if self.use_diffusion:
                     epoch_losses_bce.append(loss_bce.item())
                     epoch_losses_kl.append(loss_kl.item())
@@ -428,6 +343,19 @@ class SingleRunner:
                         corruption_rates.append(noise_masks.float().mean().item())
                     if timesteps is not None:
                         avg_timesteps.append(timesteps.float().mean().item())
+            if (batch_idx + 1) % self.args.gradient_accumulation_steps != 0:
+                params_to_clip = list(self.model_rec.parameters())
+                if self.use_diffusion and self.noise_head_rec is not None:
+                    params_to_clip.extend(self.noise_head_rec.parameters())
+                torch.nn.utils.clip_grad_norm_(params_to_clip, self.args.clip)
+                self.rec_optimizer.step()
+                self.rec_scheduler.step()
+                self.model_rec.zero_grad()
+                self.model_gen.zero_grad()
+                if self.use_diffusion and self.noise_head_rec is not None:
+                    self.noise_head_rec.zero_grad()
+                if self.use_diffusion and self.other_view_model is not None:
+                    self.other_view_model.zero_grad()
 
             avg_epoch_loss_ce = sum(epoch_losses_ce) / len(epoch_losses_ce) if epoch_losses_ce else float('nan')
             logging.info(f"Rec - Avg Loss Round {current_round_num+1} Epoch {rec_epoch+1}: CE={avg_epoch_loss_ce:.4f}")
@@ -459,7 +387,7 @@ class SingleRunner:
             current_alt_style = self.args.alt_style
             if current_alt_style == 'id_first':
                 logging.info(f"Training ID Gen first in round {round_num + 1} with style: {current_alt_style}")
-                self._train_id_generator_phase(round_num)     
+                self._train_id_generator_phase(round_num)
                 logging.info(f"Training Recommender in round {round_num + 1} with style: {current_alt_style}")
                 self._train_recommender_phase(round_num)
             elif current_alt_style == 'rec_first':
@@ -480,7 +408,6 @@ class SingleRunner:
                     social_path = os.path.join(self.args.model_path, f"model_social_round{round_num+1}_final.pt")
                     torch.save(self.model_social.state_dict(), social_path)
                     logging.info(f"Saved social model: {social_path}")
-                # Save noise heads if diffusion is enabled (optional - can be recreated)
                 if self.use_diffusion:
                     if self.noise_head_rec is not None:
                         noise_head_rec_path = os.path.join(self.args.model_path, f"noise_head_rec_round{round_num+1}_final.pt")
@@ -593,6 +520,7 @@ class SingleRunner:
                 rec_model.load_state_dict(state_dict)
                 rec_model.to(self.device)
                 rec_model.eval()
+                torch.cuda.empty_cache()
                 model_to_use = rec_model
                 # Ensure tokenizer vocab size matches model vocab size
                 # If timestep tokens were added, resize model to match tokenizer
@@ -627,6 +555,7 @@ class SingleRunner:
                 social_model.load_state_dict(state_dict)
                 social_model.to(self.device)
                 social_model.eval()
+                torch.cuda.empty_cache()
                 model_to_use = social_model
                 # Ensure tokenizer vocab size matches model vocab size
                 # If timestep tokens were added, resize model to match tokenizer
@@ -714,7 +643,10 @@ class SingleRunner:
                 test_total += len(rel_results)
                 
                 metrics_res += evaluate.get_metrics_results(rel_results, self.metrics)
+                del prediction, prediction_ids, prediction_scores
+                del batch
                 
+            torch.cuda.empty_cache()
             metrics_res = torch.tensor(metrics_res).to(self.device)
             test_total = torch.tensor(test_total).to(self.device)
             

@@ -9,7 +9,7 @@ from sentence_transformers import SentenceTransformer
 import logging
 import torch
         
-def generative_indexing_id(data_path, dataset, user_sequence_dict, phase=0, run_id=None, component=None, run_type=None):
+def generative_indexing_id(data_path, dataset, user_sequence_dict, phase=0, run_id=None, component=None, run_type=None, social_quantization_id=0):
     run_dir = os.path.join(data_path, dataset, run_id)
     os.makedirs(run_dir, exist_ok=True)
     suffix = ''
@@ -28,7 +28,8 @@ def generative_indexing_id(data_path, dataset, user_sequence_dict, phase=0, run_
     item_index_file = os.path.join(run_dir, f'item_generative_indexing_phase_{phase}{suffix}.txt') 
     
     # For 2id2rec item component, try to use cross-social enhanced user IDs
-    if (run_type == '2id2rec' or run_type == '2id2rec_socialtoid') and component == 'item_rec' and phase > 0:
+    # Only use cross-social index if social_quantization_id is enabled
+    if (run_type == '2id2rec' or run_type == '2id2rec_socialtoid') and component == 'item_rec' and phase > 0 and social_quantization_id:
         # Look for cross-social enhanced user index file using same phase
         cross_social_files = []
         for round_num in range(phase + 1):  # Check all possible round numbers

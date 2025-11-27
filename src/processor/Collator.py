@@ -8,15 +8,15 @@ class Collator:
     def __init__(self, tokenizer, args=None):
         self.tokenizer = tokenizer
         self.args = args
-        if args and getattr(args, 'use_diffusion', 1):
+        if self.args.use_diffusion:
             self.scheduler = DiscreteDiffusionScheduler(
-                num_timesteps=getattr(args, 'diffusion_timesteps', 100),
-                beta_max=getattr(args, 'diffusion_beta_max', 0.1)
+                num_timesteps=self.args.diffusion_timesteps,
+                beta_max=self.args.diffusion_beta_max
             )
             self.use_diffusion = True
             self.vocab_size = len(tokenizer)
             self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-            logging.info(f"Collator: Diffusion enabled with T={self.scheduler.num_timesteps}, β_max={getattr(args, 'diffusion_beta_max', 0.1)}")
+            logging.info(f"Collator: Diffusion enabled with T={self.scheduler.num_timesteps}, β_max={self.args.diffusion_beta_max}")
         else:
             logging.info("Collator: Diffusion disabled")
             self.use_diffusion = False
@@ -52,44 +52,26 @@ class Collator:
                 input_tensor = torch.tensor(input_id_seq, dtype=torch.long)
                 t = random.randint(0, self.scheduler.num_timesteps - 1)
                 timesteps_list.append(t)
-                
-                # Get cross-view tokens for this sample
                 cross_view_tokens = None
                 if i < len(cross_view_token_ids_list) and cross_view_token_ids_list[i] is not None:
-                    # Extract unique tokens from cross-view that are not in current sequence
                     cross_view_tokens = get_cross_view_tokens(
                         item_sequence=input_tensor,
                         social_sequence=cross_view_token_ids_list[i],
                         pad_token_id=self.pad_token_id
                     )
-                
-                # Corrupt sequence
                 corrupted_seq, noise_mask = corrupt_sequence(
                     clean_sequence=input_tensor,
                     timestep=t,
                     scheduler=self.scheduler,
                     vocab_size=self.vocab_size,
                     cross_view_tokens=cross_view_tokens,
-                    cross_view_prob=getattr(self.args, 'diffusion_cross_prob', 0.5),
+                    cross_view_prob=self.args.diffusion_cross_prob,
                     pad_token_id=self.pad_token_id,
                     seed=None
                 )
                 
                 corrupted_input_ids.append(corrupted_seq.tolist())
                 noise_masks_list.append(noise_mask.tolist())
-                
-                if i == 0 and not self._logged_first_sample:
-                        logging.info("=" * 80)
-                        logging.info("DIFFUSION VERIFICATION - First Sample:")
-                        logging.info(f"Timestep: {t}")
-                        logging.info(f"Clean input_ids (first 20): {input_id_seq[:20]}")
-                        logging.info(f"Corrupted input_ids (first 20): {corrupted_seq.tolist()[:20]}")
-                        logging.info(f"Noise mask (first 20): {noise_mask.tolist()[:20]}")
-                        corruption_rate = noise_mask.float().mean().item()
-                        logging.info(f"Corruption rate: {corruption_rate:.2%}")
-                        logging.info("=" * 80)
-                        self._logged_first_sample = True
-            
             input_ids = corrupted_input_ids
             noise_masks = noise_masks_list
             timesteps = timesteps_list
