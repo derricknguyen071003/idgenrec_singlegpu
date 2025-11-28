@@ -17,7 +17,6 @@ class TestDatasetGen(Dataset):
     def __init__(self, args, dataset, task, model_gen, tokenizer, regenerate, phase, component=None, run_type=None):
         super().__init__()
         self.args = args
-        #logging.info(f"Args: {args}")
         self.data_path = args.data_path
         self.dataset = dataset
         self.task = task
@@ -38,15 +37,24 @@ class TestDatasetGen(Dataset):
         self.construct_sentence()
         
     def load_test(self):
+        """
+        Load test data samples. Only include users with at least 3 items:
+        - 1 item: train only (no test)
+        - 2 items: train + validation (no test)
+        - >=3 items: train + validation + test (use last item for test)
+        """
         data_samples = []
         for user in self.reindex_user_seq_dict:
             items = self.reindex_user_seq_dict[user]
+            # Only test users with at least 3 items (they have test data)
+            if len(items) < 3:
+                continue
             one_sample = dict()
             one_sample['dataset'] = self.dataset
             one_sample['user_id'] = user
-            one_sample['target'] = items[-1]
+            one_sample['target'] = items[-1]  # Last item is test target
             if 'history' in self.info:
-                history = items[:-1]
+                history = items[:-1]  # All items except the last (test) one
                 if self.max_his > 0:
                     history = history[-self.max_his:]
                 one_sample['history'] = self.his_sep.join(history)
@@ -106,15 +114,24 @@ class TestDatasetSocial(Dataset):
         
         
     def load_test(self):
+        """
+        Load test data samples. Only include users with at least 3 friends:
+        - 1 friend: train only (no test)
+        - 2 friends: train + validation (no test)
+        - >=3 friends: train + validation + test (use last friend for test)
+        """
         data_samples = []
         for user in self.reindex_friend_seq_dict:
             friends = self.reindex_friend_seq_dict[user]
+            # Only test users with at least 3 friends (they have test data)
+            if len(friends) < 3:
+                continue
             one_sample = dict()
             one_sample['dataset'] = self.dataset
             one_sample['user_id'] = user
-            one_sample['target'] = friends[-1]
+            one_sample['target'] = friends[-1]  # Last friend is test target
             if 'history' in self.info:
-                history = friends
+                history = friends[:-1]  # All friends except the last (test) one
                 if self.max_his > 0:
                     history = history[-self.max_his:]
                 one_sample['history'] = self.his_sep.join(history)

@@ -12,18 +12,22 @@ from processor.Collator import Collator, TestCollator
 import numpy as np
 import os
 import string 
+from tqdm import tqdm
 import utils.generation_trie as gt
 from utils import indexing
 from utils.dataset_utils import get_dataset_generative, get_loader
 from transformers import T5Config, T5ForConditionalGeneration
 from utils.discrete_diffusion import add_timestep_tokens_to_tokenizer, prepend_timestep_token, create_noise_head, compute_kl_divergence
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
 
 
 
 class SingleRunner:
     def __init__(self, model_rec=None, model_gen=None, model_social=None, tokenizer=None, 
                  train_loader_id=None, train_loader_rec=None, train_loader_rec_social=None, train_loader_social=None,
-                 device=None, args=None, component=None, other_view_model=None):
+                 device=None, args=None, component=None, other_view_model=None, val_loader_rec=None):
         self.model_rec = model_rec.to(device) if model_rec else None
         self.model_gen = model_gen.to(device) if model_gen else None
         self.model_social = model_social.to(device) if model_social else None
@@ -33,6 +37,7 @@ class SingleRunner:
         self.train_loader_rec = train_loader_rec if train_loader_rec else None
         self.train_loader_rec_social = train_loader_rec_social if train_loader_rec_social else None
         self.train_loader_social = train_loader_social if train_loader_social else None
+        self.val_loader_rec = val_loader_rec if val_loader_rec else None
         self.device = device
         self.args = args
         self.component = component if component is not None else None
@@ -41,6 +46,18 @@ class SingleRunner:
         self.total_id_epoch = 0
         self.metrics = args.metrics.split(',')
         self.generate_num = max([int(m.split('@')[1]) for m in self.metrics if '@' in m and len(m.split('@')) > 1] or [10])
+        
+        # Early stopping state
+        self.early_stopping_patience = self.args.early_stopping_patience
+        self.early_stopping_min_delta = self.args.early_stopping_min_delta
+        self.save_best_model = self.args.save_best_model
+        self.best_val_loss = float('inf')
+        self.early_stopping_counter = 0
+        self.best_model_state = None
+        
+        # Training curve tracking
+        self.train_losses = []  # List of (round, epoch, loss) tuples
+        self.val_losses = []    # List of (round, epoch, loss) tuples
         punctuation_tokens = [self.tokenizer.encode(p, add_special_tokens=False)[0] for p in string.punctuation]
         self.punctuation_tokens_tensor = torch.tensor(punctuation_tokens, device=self.device)        
         self.use_diffusion = self.args.use_diffusion
@@ -155,15 +172,15 @@ class SingleRunner:
             self.train_loader_id.sampler.set_epoch(self.global_epoch_tracker)
             epoch_losses = []
             for batch_idx, batch in enumerate(self.train_loader_id):
-                input_prompt_ids = batch[0].to(self.device, non_blocking=True) 
-                input_prompt_positions = batch[1].to(self.device, non_blocking=True)
-                hist_ids = batch[2].to(self.device, non_blocking=True)
-                hist_att = batch[3].to(self.device, non_blocking=True)
-                output_ids = batch[4].to(self.device, non_blocking=True)
-                batch_size = hist_ids.shape[0]
-                hist_size = hist_ids.shape[1]
-                input_tensor = hist_ids.view(-1, hist_ids.shape[-1])
-                hist_att_flat = hist_att.view(-1, hist_att.shape[-1])
+                input_prompt_ids = batch[0].to(self.device, non_blocking=True) # template converted to ids
+                input_prompt_positions = batch[1].to(self.device, non_blocking=True) # positions of the template in the input
+                hist_ids = batch[2].to(self.device, non_blocking=True) # purchase sequence converted to ids
+                hist_att = batch[3].to(self.device, non_blocking=True) # purchase sequence attention mask
+                output_ids = batch[4].to(self.device, non_blocking=True) # target item converted to ids
+                batch_size = hist_ids.shape[0] # batch size
+                hist_size = hist_ids.shape[1] # history size
+                input_tensor = hist_ids.view(-1, hist_ids.shape[-1]) # purchase sequence converted to ids
+                hist_att_flat = hist_att.view(-1, hist_att.shape[-1]) # purchase sequence attention mask
                 output = self.model_gen.generate_with_grad(
                             input_tensor,
                             attention_mask=hist_att_flat, 
@@ -175,36 +192,36 @@ class SingleRunner:
                             output_hidden_states=False,
                             renormalize_logits=True,
                         )
-                scores = output['scores']
-                train_id_token_size = len(scores)
-                token_embeddings = self.model_rec.shared.weight
-                embedding_dim = token_embeddings.shape[1]       
-                hist_embeddings_list = []
-                temp_ids = output['sequences'][:, 1:]  # [batch*hist_size, seq_len-1]
-                for t in range(train_id_token_size):
-                    logits_t = scores[t]
+                scores = output['scores'] # logits for the next item prediction
+                train_id_token_size = len(scores) # number of tokens in the vocabulary
+                token_embeddings = self.model_rec.shared.weight # embedding space of the recommender model
+                embedding_dim = token_embeddings.shape[1] # embedding dimension
+                hist_embeddings_list = [] # list of embeddings for the purchase sequence
+                temp_ids = output['sequences'][:, 1:]  # [batch*hist_size, seq_len-1] # predicted next item ids
+                for t in range(train_id_token_size): # for each token in the vocabulary
+                    logits_t = scores[t] # logits for the next item prediction
                     embeds_t = torch.matmul(logits_t, token_embeddings)  # [batch*hist_size, embedding_dim]
-                    hist_embeddings_list.append(embeds_t)
+                    hist_embeddings_list.append(embeds_t) # list of embeddings for the purchase sequence
                 hist_embeddings_flat = torch.stack(hist_embeddings_list, dim=1)
-                hist_embeddings = hist_embeddings_flat.view(batch_size, hist_size, train_id_token_size, embedding_dim)
-                punctuation_mask = utils.torch_isin(temp_ids, self.punctuation_tokens_tensor)
+                hist_embeddings = hist_embeddings_flat.view(batch_size, hist_size, train_id_token_size, embedding_dim) # embeddings for the purchase sequence
+                punctuation_mask = utils.torch_isin(temp_ids, self.punctuation_tokens_tensor) # mask for punctuation tokens
                 punctuation_mask = punctuation_mask.view(batch_size, hist_size, train_id_token_size)
-                hist_embeddings = hist_embeddings * (~punctuation_mask).unsqueeze(-1).float()
+                hist_embeddings = hist_embeddings * (~punctuation_mask).unsqueeze(-1).float() # embeddings for the purchase sequence without punctuation tokens
                 input_prompt_embeddings = token_embeddings[input_prompt_ids]
-                max_prompt_size = input_prompt_embeddings.shape[1]
-                max_hist_num = hist_ids.shape[1] 
+                max_prompt_size = input_prompt_embeddings.shape[1] # maximum length of the template
+                max_hist_num = hist_ids.shape[1] # maximum length of the purchase sequence
                 max_input_len = max_prompt_size + max_hist_num * train_id_token_size                 
-                final_input = utils.insert_phrases_batch(input_prompt_embeddings, input_prompt_positions, hist_embeddings, max_input_len)
-                norms_sq = (final_input ** 2).sum(dim=-1)
-                attention_mask = (norms_sq > 1e-12).long()
+                final_input = utils.insert_phrases_batch(input_prompt_embeddings, input_prompt_positions, hist_embeddings, max_input_len) # input for the recommender model
+                norms_sq = (final_input ** 2).sum(dim=-1) # squared norm of the input
+                attention_mask = (norms_sq > 1e-12).long() # attention mask for the input
                 output = self.model_rec(
                     inputs_embeds=final_input, 
                     attention_mask=attention_mask,
                     labels=output_ids,
                     return_dict=True,
                 )
-                loss = output["loss"] / self.args.gradient_accumulation_steps
-                loss.backward()
+                loss = output["loss"] / self.args.gradient_accumulation_steps # loss for the next item prediction
+                loss.backward() # backward pass for the next item prediction
                 epoch_losses.append(loss.item() * self.args.gradient_accumulation_steps)
                 if (batch_idx + 1) % self.args.gradient_accumulation_steps == 0:
                     torch.nn.utils.clip_grad_norm_(self.model_gen.parameters(), self.args.clip)
@@ -220,14 +237,19 @@ class SingleRunner:
                 self.model_rec.zero_grad()
             avg_epoch_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else float('nan')
             logging.info(f"ID Gen - Avg Loss Round {current_round_num+1} Epoch {id_epoch+1}: {avg_epoch_loss:.4f}")
-            wandb.log({
-                "id_gen/loss": avg_epoch_loss
-            })
+            if getattr(self.args, 'use_wandb', 0) and wandb.run is not None:
+                wandb.log({
+                    "id_gen/loss": avg_epoch_loss
+                })
             self.global_epoch_tracker += 1
             self.total_id_epoch +=1
 
     def _train_recommender_phase(self, current_round_num):
         logging.info(f"--- Round {current_round_num + 1}: Training Recommender ---")
+        # Reset early stopping state at the start of each round
+        # Track best validation loss per round for early stopping
+        round_best_val_loss = float('inf')
+        round_early_stopping_counter = 0
         for param in self.model_rec.parameters(): param.requires_grad = True
         for param in self.model_gen.parameters(): param.requires_grad = False
         if self.noise_head_rec is not None:
@@ -248,6 +270,7 @@ class SingleRunner:
             epoch_losses_kl = []
             corruption_rates = []
             avg_timesteps = []
+            
             for batch_idx, batch in enumerate(self.train_loader_rec):
                 input_ids = batch[0].to(self.device, non_blocking=True)
                 attn_mask = batch[1].to(self.device, non_blocking=True)
@@ -255,11 +278,11 @@ class SingleRunner:
                 if self.use_diffusion and len(batch) > 5:
                     timesteps = batch[5].to(self.device, non_blocking=True)  # [batch_size]
                     noise_masks = batch[6].to(self.device, non_blocking=True)  # [batch_size, seq_len]
-                    input_ids, attn_mask = prepend_timestep_token(
+                    input_ids, attn_mask = prepend_timestep_token( # prepend timestep token to the input
                         input_ids, timesteps, self.timestep_token_ids, attn_mask
                     )
-                token_embeddings = self.model_rec.shared.weight
-                input_embeds = token_embeddings[input_ids]  
+                token_embeddings = self.model_rec.shared.weight # embedding space of the recommender model
+                input_embeds = token_embeddings[input_ids] # input embeddings for the recommender model
                 # CE loss for next-ID prediction
                 output = self.model_rec(
                     inputs_embeds=input_embeds,
@@ -271,17 +294,17 @@ class SingleRunner:
                 # BCE loss for noise mask prediction
                 loss_bce = torch.tensor(0.0, device=self.device)
                 if self.use_diffusion and self.noise_head_rec is not None and noise_masks is not None:
-                    encoder_outputs = self.model_rec.encoder(
+                    encoder_outputs = self.model_rec.encoder( # encoder outputs for the recommender model
                         inputs_embeds=input_embeds,
                         attention_mask=attn_mask,
                         return_dict=True
                     )
-                    encoder_hidden_states = encoder_outputs.last_hidden_state  # [batch_size, seq_len, hidden_dim]
+                    encoder_hidden_states = encoder_outputs.last_hidden_state  # [batch_size, seq_len, hidden_dim] # hidden states of the encoder
                     noise_logits = None
                     noise_logits_aligned = None
                     noise_masks_aligned = None
                     other_output = None   
-                    noise_logits = self.noise_head_rec(encoder_hidden_states)  # [batch_size, seq_len]
+                    noise_logits = self.noise_head_rec(encoder_hidden_states)  # [batch_size, seq_len] # logits for the noise mask prediction
                     if timesteps is not None:
                         noise_logits_aligned = noise_logits[:, 1:]  # Remove timestep token position
                         min_len = min(noise_logits_aligned.shape[1], noise_masks.shape[1])
@@ -291,7 +314,7 @@ class SingleRunner:
                         min_len = min(noise_logits.shape[1], noise_masks.shape[1])
                         noise_logits_aligned = noise_logits[:, :min_len]
                         noise_masks_aligned = noise_masks[:, :min_len]
-                    loss_bce = F.binary_cross_entropy_with_logits(
+                    loss_bce = F.binary_cross_entropy_with_logits( # binary cross entropy loss for the noise mask prediction
                         noise_logits_aligned,
                         noise_masks_aligned.float(),
                         reduction='mean'
@@ -299,18 +322,18 @@ class SingleRunner:
                 # KL divergence loss for aligning friend and item preferences.
                 loss_kl = torch.tensor(0.0, device=self.device)
                 if self.use_diffusion and self.other_view_model is not None:
-                    other_output = self.other_view_model(
+                    other_output = self.other_view_model( # outputs for the other view model
                         inputs_embeds=input_embeds,
                         attention_mask=attn_mask,
                         labels=output_ids,
                         return_dict=True,
                     )
-                    current_logits = output.logits  # [batch_size, output_seq_len, vocab_size]
-                    other_logits = other_output.logits  # [batch_size, output_seq_len, vocab_size]
+                    current_logits = output.logits  # [batch_size, output_seq_len, vocab_size] # logits for the current view model
+                    other_logits = other_output.logits  # [batch_size, output_seq_len, vocab_size] # logits for the other view model
                     min_seq_len = min(current_logits.shape[1], other_logits.shape[1])
-                    current_logits_aligned = current_logits[:, :min_seq_len, :]  # [batch_size, min_seq_len, vocab_size]
-                    other_logits_aligned = other_logits[:, :min_seq_len, :]  # [batch_size, min_seq_len, vocab_size]
-                    loss_kl = compute_kl_divergence(
+                    current_logits_aligned = current_logits[:, :min_seq_len, :]  # [batch_size, min_seq_len, vocab_size] # logits for the current view model aligned
+                    other_logits_aligned = other_logits[:, :min_seq_len, :]  # [batch_size, min_seq_len, vocab_size] # logits for the other view model aligned
+                    loss_kl = compute_kl_divergence( # KL divergence loss for aligning friend and item preferences
                         logits_p=current_logits_aligned,  
                         logits_q=other_logits_aligned,
                         temperature=1.0,
@@ -360,6 +383,14 @@ class SingleRunner:
             avg_epoch_loss_ce = sum(epoch_losses_ce) / len(epoch_losses_ce) if epoch_losses_ce else float('nan')
             logging.info(f"Rec - Avg Loss Round {current_round_num+1} Epoch {rec_epoch+1}: CE={avg_epoch_loss_ce:.4f}")
             
+            # Track training loss
+            self.train_losses.append({
+                'round': current_round_num + 1,
+                'epoch': rec_epoch + 1,
+                'loss': avg_epoch_loss_ce,
+                'global_step': self.global_epoch_tracker
+            })
+            
             log_dict = {
                 "rec/loss": avg_epoch_loss_ce
             }
@@ -378,8 +409,205 @@ class SingleRunner:
                 if avg_timesteps:
                     log_dict["diffusion/avg_timestep"] = sum(avg_timesteps) / len(avg_timesteps)
             
-            wandb.log(log_dict)
+            if getattr(self.args, 'use_wandb', 0) and wandb.run is not None:
+                wandb.log(log_dict)
             self.global_epoch_tracker += 1
+            
+            # Run validation at the end of each recommender epoch if validation loader is available
+            if self.val_loader_rec is not None:
+                val_loss = self._validate_recommender()
+                logging.info(f"Validation Loss: {val_loss:.4f}")
+                
+                # Track validation loss
+                if val_loss is not None:
+                    self.val_losses.append({
+                        'round': current_round_num + 1,
+                        'epoch': rec_epoch + 1,
+                        'loss': val_loss,
+                        'global_step': self.global_epoch_tracker
+                    })
+                
+                if getattr(self.args, 'use_wandb', 0) and wandb.run is not None:
+                    wandb.log({"validation/loss": val_loss})
+                
+                # Early stopping and best model tracking
+                if val_loss is not None:
+                    improved = False
+                    # Check if validation loss improved for this round
+                    if val_loss < (round_best_val_loss - self.early_stopping_min_delta):
+                        improved = True
+                        round_best_val_loss = val_loss
+                        round_early_stopping_counter = 0
+                        logging.info(f"Validation loss improved to {val_loss:.4f} (round best: {round_best_val_loss:.4f})")
+                        
+                        # Update global best if this is better
+                        if val_loss < (self.best_val_loss - self.early_stopping_min_delta):
+                            self.best_val_loss = val_loss
+                            logging.info(f"New global best validation loss: {self.best_val_loss:.4f}")
+                            
+                            # Save best model state if enabled
+                            if self.save_best_model:
+                                self.best_model_state = {
+                                    'model_rec': self.model_rec.state_dict().copy(),
+                                    'model_gen': self.model_gen.state_dict().copy(),
+                                    'round': current_round_num + 1,
+                                    'epoch': rec_epoch + 1,
+                                    'val_loss': val_loss
+                                }
+                                if self.use_diffusion and self.noise_head_rec is not None:
+                                    self.best_model_state['noise_head_rec'] = self.noise_head_rec.state_dict().copy()
+                                if self.model_social is not None:
+                                    self.best_model_state['model_social'] = self.model_social.state_dict().copy()
+                                if self.use_diffusion and self.noise_head_social is not None:
+                                    self.best_model_state['noise_head_social'] = self.noise_head_social.state_dict().copy()
+                    else:
+                        round_early_stopping_counter += 1
+                        logging.info(f"Validation loss did not improve this round. Patience: {round_early_stopping_counter}/{self.early_stopping_patience}")
+                    
+                    # Check for early stopping (per round)
+                    if self.early_stopping_patience > 0 and round_early_stopping_counter >= self.early_stopping_patience:
+                        logging.info(f"Early stopping triggered after {self.early_stopping_patience} epochs without improvement in this round")
+                        if self.best_model_state is not None:
+                            logging.info(f"Best validation loss: {self.best_val_loss:.4f} at Round {self.best_model_state['round']}, Epoch {self.best_model_state['epoch']}")
+                            # Restore best model if available
+                            if self.save_best_model:
+                                logging.info("Restoring best model checkpoint")
+                                self.model_rec.load_state_dict(self.best_model_state['model_rec'])
+                                self.model_gen.load_state_dict(self.best_model_state['model_gen'])
+                                if 'noise_head_rec' in self.best_model_state:
+                                    self.noise_head_rec.load_state_dict(self.best_model_state['noise_head_rec'])
+                                if 'model_social' in self.best_model_state:
+                                    self.model_social.load_state_dict(self.best_model_state['model_social'])
+                                if 'noise_head_social' in self.best_model_state:
+                                    self.noise_head_social.load_state_dict(self.best_model_state['noise_head_social'])
+                        # Plot training curves before early stopping
+                        self._plot_training_curves()
+                        return  # Exit training early for this round
+
+    def _validate_recommender(self):
+        """Evaluate recommender model on validation set"""
+        if self.val_loader_rec is None:
+            logging.warning("No validation loader available, skipping validation")
+            return None
+        
+        self.model_rec.eval()
+        self.model_gen.eval()
+        if self.noise_head_rec is not None:
+            self.noise_head_rec.eval()
+        
+        total_loss = 0.0
+        num_batches = 0
+        
+        with torch.no_grad():
+            for batch in self.val_loader_rec:
+                input_ids = batch[0].to(self.device, non_blocking=True)
+                attn_mask = batch[1].to(self.device, non_blocking=True)
+                output_ids = batch[3].to(self.device, non_blocking=True)
+                
+                # Handle diffusion timesteps if enabled
+                if self.use_diffusion and len(batch) > 5:
+                    timesteps = batch[5].to(self.device, non_blocking=True)
+                    noise_masks = batch[6].to(self.device, non_blocking=True)
+                    input_ids, attn_mask = prepend_timestep_token(
+                        input_ids, timesteps, self.timestep_token_ids, attn_mask
+                    )
+                
+                token_embeddings = self.model_rec.shared.weight
+                input_embeds = token_embeddings[input_ids]
+                
+                output = self.model_rec(
+                    inputs_embeds=input_embeds,
+                    attention_mask=attn_mask,
+                    labels=output_ids,
+                    return_dict=True,
+                )
+                
+                total_loss += output.loss.item()
+                num_batches += 1
+        
+        if num_batches > 0:
+            avg_val_loss = total_loss / num_batches
+            logging.info(f"Validation Loss: {avg_val_loss:.4f} (over {num_batches} batches)")
+            if getattr(self.args, 'use_wandb', 0) and wandb.run is not None:
+                wandb.log({"validation/loss": avg_val_loss})
+            return avg_val_loss
+        else:
+            logging.warning("No validation batches processed")
+            return None
+
+    def _plot_training_curves(self):
+        """Plot and save training and validation loss curves"""
+        if not self.train_losses:
+            logging.warning("No training losses to plot")
+            return
+        
+        try:
+            # Prepare data for plotting
+            train_steps = [x['global_step'] for x in self.train_losses]
+            train_losses = [x['loss'] for x in self.train_losses]
+            
+            val_steps = []
+            val_losses = []
+            if self.val_losses:
+                val_steps = [x['global_step'] for x in self.val_losses]
+                val_losses = [x['loss'] for x in self.val_losses]
+            
+            # Create figure with subplots
+            fig, ax = plt.subplots(figsize=(12, 6))
+            
+            # Plot training loss
+            ax.plot(train_steps, train_losses, 'b-', label='Training Loss', linewidth=2, alpha=0.7)
+            
+            # Plot validation loss if available
+            if val_steps and val_losses:
+                ax.plot(val_steps, val_losses, 'r-', label='Validation Loss', linewidth=2, alpha=0.7)
+                # Mark best validation point
+                if self.best_model_state is not None:
+                    best_step = next((x['global_step'] for x in self.val_losses 
+                                     if x['round'] == self.best_model_state['round'] 
+                                     and x['epoch'] == self.best_model_state['epoch']), None)
+                    if best_step is not None:
+                        best_loss = self.best_model_state['val_loss']
+                        ax.plot(best_step, best_loss, 'go', markersize=10, label=f'Best Val Loss: {best_loss:.4f}')
+            
+            # Add round boundaries if multiple rounds
+            if self.rounds > 1:
+                round_boundaries = []
+                current_round = 1
+                for i, loss_data in enumerate(self.train_losses):
+                    if loss_data['round'] > current_round:
+                        round_boundaries.append(loss_data['global_step'])
+                        current_round = loss_data['round']
+                
+                for boundary in round_boundaries:
+                    ax.axvline(x=boundary, color='gray', linestyle='--', alpha=0.5, linewidth=1)
+            
+            # Formatting
+            ax.set_xlabel('Global Step', fontsize=12)
+            ax.set_ylabel('Loss', fontsize=12)
+            component_name = self.component if self.component else 'recommender'
+            ax.set_title(f'Training Curves - {component_name}', fontsize=14, fontweight='bold')
+            ax.legend(loc='best', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            # Save plot
+            plot_dir = os.path.join(self.args.log_dir, "train", self.args.datasets.split(',')[0])
+            os.makedirs(plot_dir, exist_ok=True)
+            plot_filename = f"{self.args.run_id}_training_curves.png"
+            if self.component:
+                plot_filename = f"{self.args.run_id}_{self.component}_training_curves.png"
+            plot_path = os.path.join(plot_dir, plot_filename)
+            
+            plt.tight_layout()
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            logging.info(f"Saved training curves plot to {plot_path}")
+            
+        except Exception as e:
+            logging.warning(f"Failed to plot training curves: {e}")
+            import traceback
+            logging.debug(traceback.format_exc())
 
     def train(self):
         for round_num in range(self.rounds):
@@ -419,6 +647,33 @@ class SingleRunner:
                         logging.info(f"Saved noise head (social): {noise_head_social_path}")
             self.global_epoch_tracker += 1
         logging.info("--- Alternating Training Finished ---")
+        
+        # Plot training curves
+        self._plot_training_curves()
+        
+        # Save best model checkpoint if available and enabled
+        if self.save_best_model and self.best_model_state is not None and self.args.model_path:
+            os.makedirs(self.args.model_path, exist_ok=True)
+            logging.info(f"Saving best model checkpoint (val_loss={self.best_model_state['val_loss']:.4f} at Round {self.best_model_state['round']}, Epoch {self.best_model_state['epoch']})")
+            best_gen_path = os.path.join(self.args.model_path, "model_gen_best.pt")
+            best_rec_path = os.path.join(self.args.model_path, "model_rec_best.pt")
+            torch.save(self.best_model_state['model_gen'], best_gen_path)
+            torch.save(self.best_model_state['model_rec'], best_rec_path)
+            logging.info(f"Saved best model_gen: {best_gen_path}")
+            logging.info(f"Saved best model_rec: {best_rec_path}")
+            
+            if 'noise_head_rec' in self.best_model_state:
+                best_noise_head_rec_path = os.path.join(self.args.model_path, "noise_head_rec_best.pt")
+                torch.save(self.best_model_state['noise_head_rec'], best_noise_head_rec_path)
+                logging.info(f"Saved best noise_head_rec: {best_noise_head_rec_path}")
+            if 'model_social' in self.best_model_state:
+                best_social_path = os.path.join(self.args.model_path, "model_social_best.pt")
+                torch.save(self.best_model_state['model_social'], best_social_path)
+                logging.info(f"Saved best model_social: {best_social_path}")
+            if 'noise_head_social' in self.best_model_state:
+                best_noise_head_social_path = os.path.join(self.args.model_path, "noise_head_social_best.pt")
+                torch.save(self.best_model_state['noise_head_social'], best_noise_head_social_path)
+                logging.info(f"Saved best noise_head_social: {best_noise_head_social_path}")
 
     def get_testloader_friend(self):
         self.testloaders_social = []

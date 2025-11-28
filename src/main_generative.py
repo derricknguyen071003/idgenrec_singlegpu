@@ -10,12 +10,13 @@ import logging
 import datetime
 import wandb
 from transformers import AutoTokenizer, T5ForConditionalGeneration, T5Config, AutoModelForSeq2SeqLM
+from torch.utils.data import DataLoader
 from data.MultiTaskDataset_gen import MultiTaskDatasetGen 
 from data.MultiTaskDataset_rec import MultiTaskDatasetRec
 from data.MultiTaskDataset_social import MultiTaskDatasetSocial
 from runner.SingleRunner import SingleRunner 
 from utils import utils
-from utils.dataset_utils import get_dataset_generative, get_loader
+from utils.dataset_utils import get_dataset_generative, get_loader, get_validation_dataset
 from undecorated import undecorated
 from types import MethodType
 from utils import indexing
@@ -63,6 +64,56 @@ def single_main():
         TrainSetID_friend, TrainSetRec_friend = get_dataset_generative(args, model_gen_friend, tokenizer, regenerate=False, component='friend_rec')   
         train_loader_id_friend, train_loader_rec_friend = get_loader(args, tokenizer, TrainSetID_friend, TrainSetRec_friend)
         
+        # Create validation loaders for both item and friend recommendation
+        val_loader_rec_item = None
+        val_loader_rec_friend = None
+        
+        # Item recommendation validation
+        train_datasets_rec_item = []
+        if hasattr(TrainSetRec, 'datasets'):
+            train_datasets_rec_item = TrainSetRec.datasets
+        else:
+            train_datasets_rec_item = [TrainSetRec]
+        
+        ValSetRec_item = get_validation_dataset(args, train_datasets_rec_item, model_gen_item, tokenizer, phase=0, component='item_rec')
+        if ValSetRec_item is not None:
+            from processor.Collator import Collator
+            collator_rec = Collator(tokenizer, args=args)
+            val_loader_rec_item = DataLoader(
+                dataset=ValSetRec_item,
+                batch_size=args.rec_batch_size,
+                collate_fn=collator_rec,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=True,
+                prefetch_factor=args.prefetch_factor,
+                persistent_workers=args.num_workers > 0
+            )
+            logging.info(f"Created validation loader for item recommendation with {len(ValSetRec_item)} samples")
+        
+        # Friend recommendation validation
+        train_datasets_rec_friend = []
+        if hasattr(TrainSetRec_friend, 'datasets'):
+            train_datasets_rec_friend = TrainSetRec_friend.datasets
+        else:
+            train_datasets_rec_friend = [TrainSetRec_friend]
+        
+        ValSetRec_friend = get_validation_dataset(args, train_datasets_rec_friend, model_gen_friend, tokenizer, phase=0, component='friend_rec')
+        if ValSetRec_friend is not None:
+            from processor.Collator import Collator
+            collator_rec = Collator(tokenizer, args=args)
+            val_loader_rec_friend = DataLoader(
+                dataset=ValSetRec_friend,
+                batch_size=args.rec_batch_size,
+                collate_fn=collator_rec,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=True,
+                prefetch_factor=args.prefetch_factor,
+                persistent_workers=args.num_workers > 0
+            )
+            logging.info(f"Created validation loader for friend recommendation with {len(ValSetRec_friend)} samples")
+        
         runner_item = SingleRunner(
             model_gen=model_gen_item,
             model_rec=model_rec,
@@ -72,7 +123,8 @@ def single_main():
             device=item_device,
             args=args,
             component = 'item_rec',
-            other_view_model=model_social
+            other_view_model=model_social,
+            val_loader_rec=val_loader_rec_item
         )
         runner_friend = SingleRunner(
             model_gen=model_gen_friend,
@@ -83,11 +135,40 @@ def single_main():
             device=item_device,
             args=args,
             component = 'friend_rec',
-            other_view_model=model_rec
+            other_view_model=model_rec,
+            val_loader_rec=val_loader_rec_friend
         )
     else:
         logging.info(f"Running {args.run_type}")
-        TrainSetID_item, TrainSetRec = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False)       
+        TrainSetID_item, TrainSetRec = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False)
+        
+        # Create validation dataset and loader for all run types that support it
+        val_loader_rec = None
+        
+        # Extract individual training datasets to create validation datasets
+        train_datasets_rec = []
+        if hasattr(TrainSetRec, 'datasets'):
+            train_datasets_rec = TrainSetRec.datasets
+        else:
+            # If it's a single dataset, wrap it in a list
+            train_datasets_rec = [TrainSetRec]
+        
+        ValSetRec = get_validation_dataset(args, train_datasets_rec, model_gen_item, tokenizer, phase=0)
+        if ValSetRec is not None:
+            from processor.Collator import Collator
+            collator_rec = Collator(tokenizer, args=args)
+            val_loader_rec = DataLoader(
+                dataset=ValSetRec,
+                batch_size=args.rec_batch_size,
+                collate_fn=collator_rec,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=True,
+                prefetch_factor=args.prefetch_factor,
+                persistent_workers=args.num_workers > 0
+            )
+            logging.info(f"Created validation loader with {len(ValSetRec)} samples")
+        
         train_loader_id, train_loader_rec = get_loader(args, tokenizer, TrainSetID_item, TrainSetRec)
         runner_item = SingleRunner(
             model_rec=model_rec,
@@ -97,6 +178,7 @@ def single_main():
             train_loader_rec=train_loader_rec,
             device=item_device,
             args=args,
+            val_loader_rec=val_loader_rec,
         )
     if args.train:
         if args.run_type == '2id2rec' or args.run_type == '2id2rec_socialtoid':

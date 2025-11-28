@@ -87,6 +87,11 @@ def parse_global_args(parser):
     parser.add_argument("--lambda_mask", type=float, default=0.1, help="Weight for noise mask prediction loss")
     parser.add_argument("--lambda_kl", type=float, default=0.1, help="Weight for KL divergence loss between views")
     parser.add_argument("--noise_head_dropout", type=float, default=0.1, help="Dropout probability for noise prediction head")
+    
+    # Early stopping arguments
+    parser.add_argument("--early_stopping_patience", type=int, default=-1, help="Number of epochs to wait before early stopping (-1 to disable)")
+    parser.add_argument("--early_stopping_min_delta", type=float, default=0.0, help="Minimum change in validation loss to qualify as improvement")
+    parser.add_argument("--save_best_model", type=int, default=1, help="Save best model checkpoint based on validation loss (1 to enable, 0 to disable)")
     return parser
 
 def set_seed(seed):

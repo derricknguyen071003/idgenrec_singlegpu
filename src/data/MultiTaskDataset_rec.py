@@ -106,41 +106,31 @@ class MultiTaskDatasetRec(Dataset):
 
     def load_train(self):
         """
-        Load training data samples in the format:
-        {
-            'dataset': dataset_name,
-            'user_id': user_index,
-            'history': tokenized user history,
-            'target': tokenized target item
-        }
+        Load training data samples. Per-user splitting rules:
+        - 1 item: train only
+        - 2 items: one for train, one for validation
+        - >=3 items: rest for train, last two reserved for val/test
         """
         data_samples = []
 
         for user in self.reindex_user_seq_dict:
-            items = self.reindex_user_seq_dict[user][:-2]
-
-            for i in range(len(items)):
+            items = self.reindex_user_seq_dict[user]
+            train_items, _, _ = self._split_user_sequence(items)
+            if not train_items:
+                continue
+            for i in range(len(train_items)):
                 one_sample = dict()
                 one_sample['dataset'] = self.dataset
-                if self.args.social_quantization_id and user in self.textual_to_social_map:
-                    one_sample['user_id'] = self.textual_to_social_map[user]
-                else:
-                    one_sample['user_id'] = user
+                one_sample['user_id'] = self._get_user_identifier(user)
                 # Store original user ID for cross-view lookup
                 one_sample['original_user_id'] = user
-                one_sample['target'] = items[i]
-
+                one_sample['target'] = train_items[i]
                 if 'history' in self.info:
-                    history = items[:i]  
-
+                    history = train_items[:i]  
                     if self.max_his > 0:
                         history = history[-self.max_his:]
-
-
                     one_sample['history'] = self.his_sep.join(history)
-
                 data_samples.append(one_sample)
-
         return data_samples
 
     
@@ -151,19 +141,42 @@ class MultiTaskDatasetRec(Dataset):
         data_samples = []
         for user in self.reindex_user_seq_dict:
             items = self.reindex_user_seq_dict[user]
+            train_items, val_item, _ = self._split_user_sequence(items)
+            if val_item is None:
+                continue
             one_sample = dict()
             one_sample['dataset'] = self.dataset
-            one_sample['user_id'] = user
-            
-            one_sample['target'] = items[-2]
+            one_sample['user_id'] = self._get_user_identifier(user)
+            one_sample['original_user_id'] = user
+            one_sample['target'] = val_item
             if 'history' in self.info:
-                history = items[:-2]
+                history = train_items
                 if self.max_his > 0:
-                    history = history[-self.max_his:]
-                
+                    history = history[-self.max_his:]    
                 one_sample['history'] = self.his_sep.join(history)
             data_samples.append(one_sample)
         return data_samples
+
+    def _split_user_sequence(self, items):
+        """
+        Returns (train_items, val_item, test_item) per user following:
+        - len==0: ([], None, None)
+        - len==1: ([item0], None, None)
+        - len==2: ([item0], item1, None)
+        - len>=3: (items[:-2], items[-2], items[-1])
+        """
+        if not items:
+            return [], None, None
+        if len(items) == 1:
+            return items[:], None, None
+        if len(items) == 2:
+            return items[:-1], items[-1], None
+        return items[:-2], items[-2], items[-1]
+
+    def _get_user_identifier(self, user):
+        if getattr(self.args, 'social_quantization_id', None) and user in self.textual_to_social_map:
+            return self.textual_to_social_map[user]
+        return user
     
     def __len__(self):
         return len(self.data['input'])
@@ -176,25 +189,34 @@ class MultiTaskDatasetRec(Dataset):
     
     def shuffle(self, seed):
             g = torch.Generator()
-            g.manual_seed(seed)
-            
+            g.manual_seed(seed)    
             for task in self.task_data:
                 indices = torch.randperm(len(self.task_data[task]), generator=g).tolist()
                 self.task_data[task] = [self.task_data[task][i] for i in indices]
 
 
     def _construct_sentence_valid(self):
+        """Construct validation sentences using valid_data_samples"""
         self.data = {}
         self.data['input'] = []
         self.data['output'] = []
         self.idx_to_sample_idx = []  # Mapping from data index to sample index
-        setting = self.valid_prompt.split(':')
+        
+        # Use first seen prompt for validation if valid_prompt not specified
+        if hasattr(self, 'valid_prompt') and self.valid_prompt:
+            setting = self.valid_prompt.split(':')
+            prompt_key = (setting[0], setting[1])
+        else:
+            # Default to first seen prompt
+            prompt_key = ('seen', '0')
+        
         for task in self.tasks:
-            for i in range(len(self.data_samples)):
-                datapoint = self.data_samples[i]
-                self.data['input'].append(self.prompt[task][setting[0]][setting[1]]['Input'].format(**datapoint))
-                self.data['output'].append(self.prompt[task][setting[0]][setting[1]]['Output'].format(**datapoint))
-                self.idx_to_sample_idx.append(i)  # Map this data index to sample index i
+            for i in range(len(self.valid_data_samples)):
+                datapoint = self.valid_data_samples[i]
+                if prompt_key[0] in self.prompt[task] and prompt_key[1] in self.prompt[task][prompt_key[0]]:
+                    self.data['input'].append(self.prompt[task][prompt_key[0]][prompt_key[1]]['Input'].format(**datapoint))
+                    self.data['output'].append(self.prompt[task][prompt_key[0]][prompt_key[1]]['Output'].format(**datapoint))
+                    self.idx_to_sample_idx.append(i)  # Map this data index to sample index i
     
     def _construct_sentence_all(self):
         self.data = {}
@@ -270,3 +292,51 @@ class MultiTaskDatasetRec(Dataset):
             result['cross_view_tokens'] = None
         
         return result
+
+
+class ValidationDatasetRec(MultiTaskDatasetRec):
+    """Validation dataset that uses valid_data_samples instead of data_samples"""
+    def __init__(self, base_dataset):
+        # Don't call super().__init__ to avoid re-loading data
+        # Instead, copy all necessary attributes from base dataset
+        Dataset.__init__(self)
+        
+        # Copy all attributes from base dataset
+        for attr in dir(base_dataset):
+            if not attr.startswith('_') and not callable(getattr(base_dataset, attr, None)):
+                try:
+                    setattr(self, attr, getattr(base_dataset, attr))
+                except:
+                    pass
+        
+        # Override with validation samples
+        self.data_samples = base_dataset.valid_data_samples
+        if len(self.data_samples) > 0:
+            self.construct_validation_sentence()
+        else:
+            # Create empty data structure if no validation samples
+            self.data = {'input': [], 'output': []}
+            self.idx_to_sample_idx = []
+    
+    def construct_validation_sentence(self):
+        """Construct validation sentences using valid_data_samples"""
+        self.data = {}
+        self.data['input'] = []
+        self.data['output'] = []
+        self.idx_to_sample_idx = []
+        
+        # Use first seen prompt for validation if valid_prompt not specified
+        if hasattr(self.args, 'valid_prompt') and self.args.valid_prompt:
+            setting = self.args.valid_prompt.split(':')
+            prompt_key = (setting[0], setting[1])
+        else:
+            # Default to first seen prompt
+            prompt_key = ('seen', '0')
+        
+        for task in self.tasks:
+            for i in range(len(self.data_samples)):
+                datapoint = self.data_samples[i]
+                if prompt_key[0] in self.prompt[task] and prompt_key[1] in self.prompt[task][prompt_key[0]]:
+                    self.data['input'].append(self.prompt[task][prompt_key[0]][prompt_key[1]]['Input'].format(**datapoint))
+                    self.data['output'].append(self.prompt[task][prompt_key[0]][prompt_key[1]]['Output'].format(**datapoint))
+                    self.idx_to_sample_idx.append(i)

@@ -33,7 +33,7 @@ if [[ "$datasets" == "yelp_30_2_5" ]]; then
   social_batch_size=8
   echo "Using id_batch_size $id_batch_size and rec_batch_size $rec_batch_size and social_batch_size $social_batch_size"
 fi
-if [[ "$datasets" == "lastfm_full_10_10" || "$datasets" == "deli_full_10_10" || "$datasets" == "lastfm4i" ]]; then
+if [[ "$datasets" == "lastfm_full_10_10" || "$datasets" == "deli_full_10_10" || "$datasets" == "lastfm4i" || "$datasets" == "lastfm" ]]; then
     id_batch_size=16
     rec_batch_size=32
     social_batch_size=16

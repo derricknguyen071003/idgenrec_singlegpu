@@ -14,21 +14,10 @@ def generative_indexing_id(data_path, dataset, user_sequence_dict, phase=0, run_
     os.makedirs(run_dir, exist_ok=True)
     suffix = ''
     if run_type == '2id2rec' or run_type == '2id2rec_socialtoid':
-        if component == 'item_rec':
-            suffix = '_item'
-        elif component == 'friend_rec':
-            suffix = '_social'
-    elif run_type == '2id1rec':
-        if component == 'item_view':
-            suffix = '_item'
-        elif component == 'social_view':
-            suffix = '_social'
-    
+        suffix = '_item' if component == 'item_rec' else '_social'    
     user_index_file = os.path.join(run_dir, f'user_generative_index_phase_{phase}{suffix}.txt')
     item_index_file = os.path.join(run_dir, f'item_generative_indexing_phase_{phase}{suffix}.txt') 
     
-    # For 2id2rec item component, try to use cross-social enhanced user IDs
-    # Only use cross-social index if social_quantization_id is enabled
     if (run_type == '2id2rec' or run_type == '2id2rec_socialtoid') and component == 'item_rec' and phase > 0 and social_quantization_id:
         # Look for cross-social enhanced user index file using same phase
         cross_social_files = []
@@ -60,16 +49,15 @@ def generative_indexing_id(data_path, dataset, user_sequence_dict, phase=0, run_
                 )
             user_map = get_dict_from_lines(utils.ReadLineFromFile(user_index_file))
     else:
-        # Regular behavior for other run types or components
         if phase == 0:
             original_user_index_file = os.path.join(data_path, dataset, f'user_generative_index_phase_0.txt')
             original_item_index_file = os.path.join(data_path, dataset, f'item_generative_indexing_phase_0.txt')
             if os.path.exists(original_user_index_file) and not os.path.exists(user_index_file):
                 shutil.copy2(original_user_index_file, user_index_file)
-                print(f"Copied existing user index file to run directory (with suffix): {user_index_file}")
+                print(f"Copied existing user index file to run directory: {user_index_file}")
             if os.path.exists(original_item_index_file) and not os.path.exists(item_index_file):
                 shutil.copy2(original_item_index_file, item_index_file)
-                print(f"Copied existing item index file to run directory (with suffix): {item_index_file}")
+                print(f"Copied existing item index file to run directory: {item_index_file}")
         if not os.path.exists(user_index_file):
             raise FileNotFoundError(
                 f"User index file not found: {user_index_file}\n"
@@ -90,18 +78,8 @@ def generative_indexing_rec(data_path, dataset, user_sequence_dict, model_gen, t
     user_sequence_file = os.path.join(data_path, dataset, 'user_sequence.txt')
     run_dir = os.path.join(data_path, dataset, run_id)
     os.makedirs(run_dir, exist_ok=True)
-    suffix = ''
     if run_type == '2id2rec' or run_type == '2id2rec_socialtoid':
-        if component == 'item_rec':
-            suffix = '_item'
-        elif component == 'friend_rec':
-            suffix = '_social'
-    elif run_type == '2id1rec':
-        if component == 'item_view':
-            suffix = '_item'
-        elif component == 'social_view':
-            suffix = '_social'
-    
+        suffix = '_item' if component == 'item_rec' else '_social'    
     item_index_file = os.path.join(run_dir, f'item_generative_indexing_phase_{phase}{suffix}.txt')
     user_index_file = os.path.join(run_dir, f'user_generative_index_phase_{phase}{suffix}.txt') 
     if phase == 0:
@@ -109,22 +87,67 @@ def generative_indexing_rec(data_path, dataset, user_sequence_dict, model_gen, t
         original_user_index_file = os.path.join(data_path, dataset, f'user_generative_index_phase_0.txt')
         if os.path.exists(original_item_index_file) and not os.path.exists(item_index_file):            
             shutil.copy2(original_item_index_file, item_index_file)
-            print(f"Copied existing item index file to run directory (with suffix): {item_index_file}")     
+            print(f"Copied existing item index file to run directory: {item_index_file}")     
         if os.path.exists(original_user_index_file) and not os.path.exists(user_index_file):
             shutil.copy2(original_user_index_file, user_index_file)
-            print(f"Copied existing user index file to run directory (with suffix): {user_index_file}")
+            print(f"Copied existing user index file to run directory: {user_index_file}")
     if (phase == 0 and not os.path.exists(item_index_file)) or (phase != 0 and regenerate):
         print(f"(re)generate textual id with id generator phase {phase} for component {component}!")
         generate_item_id_from_text(item_text_file, item_index_file, model_gen, tokenizer)
+        logging.info(f"Regenerated item ID phase {phase} for component {component} at {item_index_file}")
     item_info = utils.ReadLineFromFile(item_index_file)
     item_map = get_dict_from_lines(item_info)
     if (phase == 0 and not os.path.exists(user_index_file)) or (phase != 0 and regenerate):
         print(f"(re)generate user id with id generator phase {phase} for component {component}!")
         generate_user_id_from_text(item_map, user_index_file, user_sequence_file, model_gen, tokenizer)
+        logging.info(f"Regenerated user ID phase {phase} for component {component} at {user_index_file}")
     user_info = utils.ReadLineFromFile(user_index_file)
     user_map = get_dict_from_lines(user_info)
     reindex_user_sequence_dict = reindex(user_sequence_dict, user_map, item_map)
     return reindex_user_sequence_dict, item_map 
+
+def _filter_users_with_training_data(sequence_dict, is_social=False):
+    """
+    Filter users to only include those that will have training data.
+    
+    For social (friend) sequences:
+    - Skip users with len <= 2 (they won't have training data after split)
+    - Include users with len >= 3 (at least 2 training friends after split)
+    
+    For item sequences:
+    - Include all users with at least 1 item (all have training data)
+    
+    Args:
+        sequence_dict: Dictionary mapping user_id to list of items/friends
+        is_social: If True, apply social filtering logic (skip users with <= 2 friends)
+    
+    Returns:
+        Filtered sequence dictionary
+    """
+    filtered_dict = {}
+    skipped_count = 0
+    
+    for user_id, sequence in sequence_dict.items():
+        if is_social:
+            # For social: skip users with <= 2 friends (they won't have training data)
+            # len==1: 1 training friend -> skipped in load_train (needs >= 2 training friends)
+            # len==2: 1 training friend -> skipped in load_train (needs >= 2 training friends)
+            # len>=3: at least 2 training friends -> included
+            if len(sequence) <= 2:
+                skipped_count += 1
+                continue
+        else:
+            # For items: include all users with at least 1 item
+            if len(sequence) == 0:
+                skipped_count += 1
+                continue
+        
+        filtered_dict[user_id] = sequence
+    
+    if skipped_count > 0:
+        logging.info(f"Filtered out {skipped_count} users without training data (is_social={is_social}, remaining={len(filtered_dict)})")
+    
+    return filtered_dict
 
 def generative_indexing_social(data_path, dataset, friend_sequence_dict, phase=0, run_id=None, component=None, model_gen=None, tokenizer=None, regenerate=True, run_type=None):
     item_text_file = os.path.join(data_path, dataset, 'item_plain_text.txt')
@@ -142,6 +165,10 @@ def generative_indexing_social(data_path, dataset, friend_sequence_dict, phase=0
             suffix = '_item'
         elif component == 'social_view':
             suffix = '_social'
+    
+    # Filter users to only include those that will have training data
+    # Users with <= 2 friends won't have training data (they get skipped in load_train)
+    friend_sequence_dict = _filter_users_with_training_data(friend_sequence_dict, is_social=True)
     
     item_index_file = os.path.join(run_dir, f'item_generative_indexing_phase_{phase}{suffix}.txt')
     logging.info(f"Item index file: {item_index_file}")
@@ -167,7 +194,9 @@ def generative_indexing_social(data_path, dataset, friend_sequence_dict, phase=0
     if (phase == 0 and not os.path.exists(user_index_file)) or (phase != 0 and regenerate):
         if model_gen and tokenizer:
             print(f"(re)generate user id with id generator phase {phase} for component {component}!")
-            generate_user_id_from_text(item_map, user_index_file, user_sequence_file, model_gen, tokenizer)
+            # Only generate IDs for users that will have training data
+            user_filter = set(friend_sequence_dict.keys()) if friend_sequence_dict else None
+            generate_user_id_from_text(item_map, user_index_file, user_sequence_file, model_gen, tokenizer, user_filter=user_filter)
     user_info = utils.ReadLineFromFile(user_index_file)
     user_map = get_dict_from_lines(user_info)
     
@@ -184,23 +213,49 @@ def get_dict_from_lines(lines):
 def reindex(user_sequence_dict, user_map, item_map):
     reindex_user_sequence_dict = dict()
     for user in user_sequence_dict:
-        uid = user_map[user]
+        # Use textual ID if available, otherwise fallback to original ID
+        # (users without textual IDs were filtered out because they have no training data,
+        #  but we still need to handle them if they appear in other users' sequences)
+        if user in user_map:
+            uid = user_map[user]  # Use textual ID
+        else:
+            uid = user  # Fallback to original ID
+            logging.debug(f"User {user} has no textual ID, using original ID as fallback")
+        
         items = user_sequence_dict[user]
-        reindex_user_sequence_dict[uid] = [item_map[i] for i in items]
+        # Only include items that exist in item_map, fallback to original item ID if not mapped
+        mapped_items = []
+        for i in items:
+            if i in item_map:
+                mapped_items.append(item_map[i])  # Use textual item ID
+            else:
+                mapped_items.append(i)  # Fallback to original item ID
+                logging.debug(f"Item {i} has no textual ID, using original ID as fallback")
+        
+        if mapped_items:  # Only add if there are items
+            reindex_user_sequence_dict[uid] = mapped_items
         
     return reindex_user_sequence_dict
     
 def reindex_social(friend_sequence_dict, user_map):
     reindex_friend_sequence_dict = dict()
     for user in friend_sequence_dict:
-        if user not in user_map:
-            continue
-        uid = user_map[user]
+        # Use textual ID if available, otherwise fallback to original ID
+        if user in user_map:
+            uid = user_map[user]  # Use textual ID
+        else:
+            uid = user  # Fallback to original ID
+            logging.debug(f"User {user} has no textual ID, using original ID as fallback")
+        
         items = friend_sequence_dict[user]
         mapped_friends = []
         for i in items:
             if i in user_map:
-                mapped_friends.append(user_map[i])
+                mapped_friends.append(user_map[i])  # Use textual friend ID
+            else:
+                mapped_friends.append(i)  # Fallback to original friend ID
+                logging.debug(f"Friend {i} has no textual ID, using original ID as fallback")
+        
         if mapped_friends:
             reindex_friend_sequence_dict[uid] = mapped_friends
         
@@ -274,7 +329,7 @@ def generate_text_id_in_memory(text, model_gen, tokenizer, existing_ids=None):
     model_gen.eval()
     for param in model_gen.parameters():
         param.requires_grad = False
-    
+
     found = False
     dp = 1.
     min_l = 1
@@ -311,19 +366,35 @@ def generate_text_id_in_memory(text, model_gen, tokenizer, existing_ids=None):
     
     return None
 
-def generate_user_id_from_text(item_map, user_index_file, user_sequence_file, model_gen, tokenizer):
+def generate_user_id_from_text(item_map, user_index_file, user_sequence_file, model_gen, tokenizer, user_filter=None):
+    """
+    Generate user textual IDs from their item sequences.
+    
+    Args:
+        item_map: Dictionary mapping item IDs to textual item IDs
+        user_index_file: Output file path for user index
+        user_sequence_file: Input file with user sequences
+        model_gen: Model for generating IDs
+        tokenizer: Tokenizer
+        user_filter: Optional set of user IDs to include (if None, include all users)
+    """
     device = next(model_gen.parameters()).device
     model_gen.eval()
     for param in model_gen.parameters():
         param.requires_grad = False
     torch.cuda.synchronize()
     logging.info(f"Generating user id using device: {device}")
+    if user_filter is not None:
+        logging.info(f"Filtering users: only generating IDs for {len(user_filter)} users with training data")
     user_seq_dict = {}
     with open(user_sequence_file, 'r') as file:
         for line in file:
             parts = line.strip().split()
             if parts:
                 uid = parts[0]
+                # Skip users not in filter if filter is provided
+                if user_filter is not None and uid not in user_filter:
+                    continue
                 item_ids = parts[1:]
                 mapped = [item_map[item] for item in item_ids if item in item_map]
                 if mapped:
@@ -338,7 +409,10 @@ def generate_user_id_from_text(item_map, user_index_file, user_sequence_file, mo
         found = False
         dp = 1.
         min_l = 1
-        #logging.info(f"Generating user id for {uid} with text: {text}")
+        logging.info(f"Generating user id for {uid} with text: {text}")
+        if text is None or text == "":
+            logging.warning(f"Text is None or empty for user {uid}")
+            continue
         while not found:
             inputs = tokenizer([text], max_length=256, truncation=True, return_tensors="pt").to(device)
 
@@ -366,7 +440,7 @@ def generate_user_id_from_text(item_map, user_index_file, user_sequence_file, mo
             if dp >= 10:
                 min_l += 10
                 dp = 1.
-        #logging.info(f'New id: {gen_id} for user {uid}')
+        logging.info(f'New id: {gen_id} for user {uid}')
     with open(user_index_file, "w") as f:
         for uid, gen_id in user_id_dict.items():
             f.write(f"{uid} {gen_id}\n")

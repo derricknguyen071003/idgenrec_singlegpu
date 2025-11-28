@@ -1,7 +1,7 @@
 from data.MultiTaskDataset_gen import MultiTaskDatasetGen
-from data.MultiTaskDataset_rec import MultiTaskDatasetRec
+from data.MultiTaskDataset_rec import MultiTaskDatasetRec, ValidationDatasetRec
 from data.MultiTaskDataset_social import MultiTaskDatasetSocial
-from data.MultiTaskDataset_rec_social import MultiTaskDatasetRecSocial
+from data.MultiTaskDataset_rec_social import MultiTaskDatasetRecSocial, ValidationDatasetRecSocial
 from torch.utils.data import ConcatDataset, DataLoader
 from processor.SingleMultiDataTaskSampler import SingleMultiDataTaskSampler
 from processor.Collator import CollatorGen, Collator
@@ -240,6 +240,48 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
         return TrainSetID, TrainSetRec
     else:
         raise ValueError(f"Unsupported run_type: {args.run_type}. Supported types: 'original_idgenrec', 'social_to_rec', 'social_to_id', 'social_to_both', '1id2rec', '2id2rec', '2id2rec_socialtoid', '2id1rec', 'idgenrec_friend', 'item_to_id_friendrec', 'item_to_rec_friendrec'")
+
+def get_validation_dataset(args, train_datasets_rec, model_gen, tokenizer, phase=0, component=None):
+    """
+    Create validation datasets from training datasets.
+    
+    Args:
+        args: Arguments object
+        train_datasets_rec: List of training datasets (MultiTaskDatasetRec or MultiTaskDatasetRecSocial)
+        model_gen: Model generator
+        tokenizer: Tokenizer
+        phase: Phase number
+        component: Component type ('item_rec', 'friend_rec', etc.) for filtering
+    
+    Returns:
+        Validation dataset (ConcatDataset) or None if not applicable
+    """
+    validation_datasets = []
+    for train_dataset in train_datasets_rec:
+        # Check if dataset has validation samples
+        if not hasattr(train_dataset, 'valid_data_samples') or len(train_dataset.valid_data_samples) == 0:
+            continue
+        
+        # Determine dataset type and create appropriate validation dataset
+        if isinstance(train_dataset, MultiTaskDatasetRecSocial):
+            val_dataset = ValidationDatasetRecSocial(train_dataset)
+        elif isinstance(train_dataset, MultiTaskDatasetRec):
+            val_dataset = ValidationDatasetRec(train_dataset)
+        else:
+            logging.warning(f"Unknown dataset type for validation: {type(train_dataset)}")
+            continue
+        
+        validation_datasets.append(val_dataset)
+        dataset_name = getattr(train_dataset, 'dataset', 'unknown')
+        logging.info(f"Created validation dataset for {dataset_name}: {len(val_dataset)} samples")
+    
+    if not validation_datasets:
+        logging.warning("No validation datasets created (no validation samples available)")
+        return None
+    
+    ValSetRec = ConcatDataset(validation_datasets)
+    logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
+    return ValSetRec
 
 def get_loader(args, tokenizer, TrainSetID, TrainSetRec, TrainSetRecSocial=None, TrainSetSocial=None):
     collator_gen = CollatorGen(tokenizer)
