@@ -260,8 +260,12 @@ class SingleRunner:
 
         current_phase_for_rec_dataset = current_round_num + 1
         logging.info(f"Recommender training (Round {current_round_num+1}): Refreshing dataset/loader for phase {current_phase_for_rec_dataset}")
-        _, refreshed_TrainSetRec = get_dataset_generative(self.args, self.model_gen, self.tokenizer, phase=current_phase_for_rec_dataset, component=self.component)
-        _, self.train_loader_rec = get_loader(self.args, self.tokenizer, None, refreshed_TrainSetRec) 
+        result = get_dataset_generative(self.args, self.model_gen, self.tokenizer, phase=current_phase_for_rec_dataset, component=self.component)
+        if len(result) == 3:
+            _, refreshed_TrainSetRec, _ = result
+        else:
+            _, refreshed_TrainSetRec = result
+        _, self.train_loader_rec, _ = get_loader(self.args, self.tokenizer, None, refreshed_TrainSetRec) 
         for rec_epoch in range(self.args.rec_epochs):
             logging.info(f"Recommender - Round {current_round_num + 1}, Epoch {rec_epoch + 1}/{self.args.rec_epochs}")
             self.train_loader_rec.sampler.set_epoch(self.global_epoch_tracker)

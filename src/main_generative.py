@@ -16,7 +16,7 @@ from data.MultiTaskDataset_rec import MultiTaskDatasetRec
 from data.MultiTaskDataset_social import MultiTaskDatasetSocial
 from runner.SingleRunner import SingleRunner 
 from utils import utils
-from utils.dataset_utils import get_dataset_generative, get_loader, get_validation_dataset
+from utils.dataset_utils import get_dataset_generative, get_loader
 from undecorated import undecorated
 from types import MethodType
 from utils import indexing
@@ -58,61 +58,21 @@ def single_main():
         model_social.generate_with_grad = MethodType(generate_with_grad, model_social)
         model_social.resize_token_embeddings(len(tokenizer))
 
-        TrainSetID_item, TrainSetRec = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False, component='item_rec')   
-        train_loader_id_item, train_loader_rec_item = get_loader(args, tokenizer, TrainSetID_item, TrainSetRec)
-        
-        TrainSetID_friend, TrainSetRec_friend = get_dataset_generative(args, model_gen_friend, tokenizer, regenerate=False, component='friend_rec')   
-        train_loader_id_friend, train_loader_rec_friend = get_loader(args, tokenizer, TrainSetID_friend, TrainSetRec_friend)
-        
-        # Create validation loaders for both item and friend recommendation
-        val_loader_rec_item = None
-        val_loader_rec_friend = None
-        
-        # Item recommendation validation
-        train_datasets_rec_item = []
-        if hasattr(TrainSetRec, 'datasets'):
-            train_datasets_rec_item = TrainSetRec.datasets
+        result_item = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False, component='item_rec')
+        if len(result_item) == 3:
+            TrainSetID_item, TrainSetRec, ValSetRec_item = result_item
         else:
-            train_datasets_rec_item = [TrainSetRec]
+            TrainSetID_item, TrainSetRec = result_item
+            ValSetRec_item = None
+        train_loader_id_item, train_loader_rec_item, val_loader_rec_item = get_loader(args, tokenizer, TrainSetID_item, TrainSetRec, ValSetRec=ValSetRec_item)
         
-        ValSetRec_item = get_validation_dataset(args, train_datasets_rec_item, model_gen_item, tokenizer, phase=0, component='item_rec')
-        if ValSetRec_item is not None:
-            from processor.Collator import Collator
-            collator_rec = Collator(tokenizer, args=args)
-            val_loader_rec_item = DataLoader(
-                dataset=ValSetRec_item,
-                batch_size=args.rec_batch_size,
-                collate_fn=collator_rec,
-                shuffle=False,
-                num_workers=args.num_workers,
-                pin_memory=True,
-                prefetch_factor=args.prefetch_factor,
-                persistent_workers=args.num_workers > 0
-            )
-            logging.info(f"Created validation loader for item recommendation with {len(ValSetRec_item)} samples")
-        
-        # Friend recommendation validation
-        train_datasets_rec_friend = []
-        if hasattr(TrainSetRec_friend, 'datasets'):
-            train_datasets_rec_friend = TrainSetRec_friend.datasets
+        result_friend = get_dataset_generative(args, model_gen_friend, tokenizer, regenerate=False, component='friend_rec')
+        if len(result_friend) == 3:
+            TrainSetID_friend, TrainSetRec_friend, ValSetRec_friend = result_friend
         else:
-            train_datasets_rec_friend = [TrainSetRec_friend]
-        
-        ValSetRec_friend = get_validation_dataset(args, train_datasets_rec_friend, model_gen_friend, tokenizer, phase=0, component='friend_rec')
-        if ValSetRec_friend is not None:
-            from processor.Collator import Collator
-            collator_rec = Collator(tokenizer, args=args)
-            val_loader_rec_friend = DataLoader(
-                dataset=ValSetRec_friend,
-                batch_size=args.rec_batch_size,
-                collate_fn=collator_rec,
-                shuffle=False,
-                num_workers=args.num_workers,
-                pin_memory=True,
-                prefetch_factor=args.prefetch_factor,
-                persistent_workers=args.num_workers > 0
-            )
-            logging.info(f"Created validation loader for friend recommendation with {len(ValSetRec_friend)} samples")
+            TrainSetID_friend, TrainSetRec_friend = result_friend
+            ValSetRec_friend = None
+        train_loader_id_friend, train_loader_rec_friend, val_loader_rec_friend = get_loader(args, tokenizer, TrainSetID_friend, TrainSetRec_friend, ValSetRec=ValSetRec_friend)
         
         runner_item = SingleRunner(
             model_gen=model_gen_item,
@@ -140,36 +100,15 @@ def single_main():
         )
     else:
         logging.info(f"Running {args.run_type}")
-        TrainSetID_item, TrainSetRec = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False)
-        
-        # Create validation dataset and loader for all run types that support it
-        val_loader_rec = None
-        
-        # Extract individual training datasets to create validation datasets
-        train_datasets_rec = []
-        if hasattr(TrainSetRec, 'datasets'):
-            train_datasets_rec = TrainSetRec.datasets
+        # get_dataset_generative now returns validation datasets for all run types
+        result = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False)
+        if len(result) == 3:
+            TrainSetID_item, TrainSetRec, ValSetRec = result
         else:
-            # If it's a single dataset, wrap it in a list
-            train_datasets_rec = [TrainSetRec]
+            TrainSetID_item, TrainSetRec = result
+            ValSetRec = None
         
-        ValSetRec = get_validation_dataset(args, train_datasets_rec, model_gen_item, tokenizer, phase=0)
-        if ValSetRec is not None:
-            from processor.Collator import Collator
-            collator_rec = Collator(tokenizer, args=args)
-            val_loader_rec = DataLoader(
-                dataset=ValSetRec,
-                batch_size=args.rec_batch_size,
-                collate_fn=collator_rec,
-                shuffle=False,
-                num_workers=args.num_workers,
-                pin_memory=True,
-                prefetch_factor=args.prefetch_factor,
-                persistent_workers=args.num_workers > 0
-            )
-            logging.info(f"Created validation loader with {len(ValSetRec)} samples")
-        
-        train_loader_id, train_loader_rec = get_loader(args, tokenizer, TrainSetID_item, TrainSetRec)
+        train_loader_id, train_loader_rec, val_loader_rec = get_loader(args, tokenizer, TrainSetID_item, TrainSetRec, ValSetRec=ValSetRec)
         runner_item = SingleRunner(
             model_rec=model_rec,
             model_gen=model_gen_item,

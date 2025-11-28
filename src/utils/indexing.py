@@ -106,69 +106,30 @@ def generative_indexing_rec(data_path, dataset, user_sequence_dict, model_gen, t
     reindex_user_sequence_dict = reindex(user_sequence_dict, user_map, item_map)
     return reindex_user_sequence_dict, item_map 
 
-def _filter_users_with_training_data(sequence_dict, is_social=False):
-    """
-    Filter users to only include those that will have training data.
-    
-    For social (friend) sequences:
-    - Skip users with len <= 2 (they won't have training data after split)
-    - Include users with len >= 3 (at least 2 training friends after split)
-    
-    For item sequences:
-    - Include all users with at least 1 item (all have training data)
-    
-    Args:
-        sequence_dict: Dictionary mapping user_id to list of items/friends
-        is_social: If True, apply social filtering logic (skip users with <= 2 friends)
-    
-    Returns:
-        Filtered sequence dictionary
-    """
-    filtered_dict = {}
-    skipped_count = 0
-    
-    for user_id, sequence in sequence_dict.items():
-        if is_social:
-            # For social: skip users with <= 2 friends (they won't have training data)
-            # len==1: 1 training friend -> skipped in load_train (needs >= 2 training friends)
-            # len==2: 1 training friend -> skipped in load_train (needs >= 2 training friends)
-            # len>=3: at least 2 training friends -> included
-            if len(sequence) <= 2:
-                skipped_count += 1
-                continue
-        else:
-            # For items: include all users with at least 1 item
-            if len(sequence) == 0:
-                skipped_count += 1
-                continue
-        
-        filtered_dict[user_id] = sequence
-    
-    if skipped_count > 0:
-        logging.info(f"Filtered out {skipped_count} users without training data (is_social={is_social}, remaining={len(filtered_dict)})")
-    
-    return filtered_dict
-
 def generative_indexing_social(data_path, dataset, friend_sequence_dict, phase=0, run_id=None, component=None, model_gen=None, tokenizer=None, regenerate=True, run_type=None):
     item_text_file = os.path.join(data_path, dataset, 'item_plain_text.txt')
     user_sequence_file = os.path.join(data_path, dataset, 'user_sequence.txt')
     run_dir = os.path.join(data_path, dataset, run_id)
     os.makedirs(run_dir, exist_ok=True)
-    suffix = ''
     if run_type == '2id2rec' or run_type == '2id2rec_socialtoid':
         if component == 'item_rec':
             suffix = '_item'
         elif component == 'friend_rec':
             suffix = '_social'
-    elif run_type == '2id1rec':
-        if component == 'item_view':
-            suffix = '_item'
-        elif component == 'social_view':
-            suffix = '_social'
     
     # Filter users to only include those that will have training data
-    # Users with <= 2 friends won't have training data (they get skipped in load_train)
-    friend_sequence_dict = _filter_users_with_training_data(friend_sequence_dict, is_social=True)
+    # Skip users with <= 3 friends (after split: len==1->1 train, len==2->1 train, len==3->1 train, all skipped)
+    # Only len>=4 gives >=2 training friends (not skipped in load_train)
+    filtered_friend_sequence_dict = {}
+    skipped_count = 0
+    for user_id, friends in friend_sequence_dict.items():
+        if len(friends) <= 3:
+            skipped_count += 1
+            continue
+        filtered_friend_sequence_dict[user_id] = friends
+    if skipped_count > 0:
+        logging.info(f"Filtered out {skipped_count} users without training data (remaining={len(filtered_friend_sequence_dict)})")
+    friend_sequence_dict = filtered_friend_sequence_dict
     
     item_index_file = os.path.join(run_dir, f'item_generative_indexing_phase_{phase}{suffix}.txt')
     logging.info(f"Item index file: {item_index_file}")
