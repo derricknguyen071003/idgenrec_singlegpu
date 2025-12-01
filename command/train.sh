@@ -1,5 +1,5 @@
 item_gpu=${item_gpu:-3}
-datasets=${datasets}
+datasets=${datasets=lastfm}
 run_id=${run_id}
 run_type=${run_type}
 use_diffusion=${use_diffusion:-0}

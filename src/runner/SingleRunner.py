@@ -260,12 +260,11 @@ class SingleRunner:
 
         current_phase_for_rec_dataset = current_round_num + 1
         logging.info(f"Recommender training (Round {current_round_num+1}): Refreshing dataset/loader for phase {current_phase_for_rec_dataset}")
-        result = get_dataset_generative(self.args, self.model_gen, self.tokenizer, phase=current_phase_for_rec_dataset, component=self.component)
-        if len(result) == 3:
-            _, refreshed_TrainSetRec, _ = result
-        else:
-            _, refreshed_TrainSetRec = result
-        _, self.train_loader_rec, _ = get_loader(self.args, self.tokenizer, None, refreshed_TrainSetRec) 
+        _, refreshed_TrainSetRec, refreshed_ValSetRec = get_dataset_generative(self.args, self.model_gen, self.tokenizer, phase=current_phase_for_rec_dataset, component=self.component)
+        _, self.train_loader_rec, refreshed_val_loader_rec = get_loader(self.args, self.tokenizer, None, refreshed_TrainSetRec, ValSetRec=refreshed_ValSetRec)
+        # Update validation loader if available
+        if refreshed_val_loader_rec is not None:
+            self.val_loader_rec = refreshed_val_loader_rec 
         for rec_epoch in range(self.args.rec_epochs):
             logging.info(f"Recommender - Round {current_round_num + 1}, Epoch {rec_epoch + 1}/{self.args.rec_epochs}")
             self.train_loader_rec.sampler.set_epoch(self.global_epoch_tracker)
@@ -744,16 +743,17 @@ class SingleRunner:
 
                    
     def _test_recommender(self):
-        self.get_testloader_item()
-        self.model_rec.eval()
-        logging.info(f"--- Testing Item Recommender Performance ---")
-        for loader in self.testloaders_rec:
-            self.test_dataset_task(loader, test_type="item")
-        
-        self.get_testloader_friend()
-        logging.info(f"--- Testing Friend Recommender Performance ---")
-        for loader in self.testloaders_social:
-            self.test_dataset_task(loader, test_type="friend")
+        if self.args.rec_model_path:
+            self.get_testloader_item()
+            self.model_rec.eval()
+            logging.info(f"--- Testing Item Recommender Performance ---")
+            for loader in self.testloaders_rec:
+                self.test_dataset_task(loader, test_type="item")
+        if self.args.social_model_path:
+            self.get_testloader_friend()
+            logging.info(f"--- Testing Friend Recommender Performance ---")
+            for loader in self.testloaders_social:
+                self.test_dataset_task(loader, test_type="friend")
         logging.info("--- Testing Finished ---")
 
     def test_dataset_task(self, testloader, test_type):        

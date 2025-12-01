@@ -7,13 +7,8 @@ torch.cuda.empty_cache()
 torch.backends.cudnn.benchmark = True
 import argparse
 import logging
-import datetime
 import wandb
 from transformers import AutoTokenizer, T5ForConditionalGeneration, T5Config, AutoModelForSeq2SeqLM
-from torch.utils.data import DataLoader
-from data.MultiTaskDataset_gen import MultiTaskDatasetGen 
-from data.MultiTaskDataset_rec import MultiTaskDatasetRec
-from data.MultiTaskDataset_social import MultiTaskDatasetSocial
 from runner.SingleRunner import SingleRunner 
 from utils import utils
 from utils.dataset_utils import get_dataset_generative, get_loader
@@ -33,9 +28,9 @@ def single_main():
         utils.setup_wandb(args)
     logging.info(f"Using device: {item_device}")
     config = T5Config.from_pretrained(args.backbone)
+    tokenizer = AutoTokenizer.from_pretrained(args.backbone)
     model_gen_item = AutoModelForSeq2SeqLM.from_pretrained("nandakishormpai/t5-small-machine-articles-tag-generation")
     model_gen_item.to(item_device)  
-    tokenizer = AutoTokenizer.from_pretrained(args.backbone)
     model_rec = T5ForConditionalGeneration.from_pretrained(args.backbone, config=config)    
     generate_with_grad = undecorated(model_rec.generate)
     model_rec.generate_with_grad = MethodType(generate_with_grad, model_rec)
@@ -58,20 +53,10 @@ def single_main():
         model_social.generate_with_grad = MethodType(generate_with_grad, model_social)
         model_social.resize_token_embeddings(len(tokenizer))
 
-        result_item = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False, component='item_rec')
-        if len(result_item) == 3:
-            TrainSetID_item, TrainSetRec, ValSetRec_item = result_item
-        else:
-            TrainSetID_item, TrainSetRec = result_item
-            ValSetRec_item = None
+        TrainSetID_item, TrainSetRec, ValSetRec_item = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False, component='item_rec')
         train_loader_id_item, train_loader_rec_item, val_loader_rec_item = get_loader(args, tokenizer, TrainSetID_item, TrainSetRec, ValSetRec=ValSetRec_item)
         
-        result_friend = get_dataset_generative(args, model_gen_friend, tokenizer, regenerate=False, component='friend_rec')
-        if len(result_friend) == 3:
-            TrainSetID_friend, TrainSetRec_friend, ValSetRec_friend = result_friend
-        else:
-            TrainSetID_friend, TrainSetRec_friend = result_friend
-            ValSetRec_friend = None
+        TrainSetID_friend, TrainSetRec_friend, ValSetRec_friend = get_dataset_generative(args, model_gen_friend, tokenizer, regenerate=False, component='friend_rec')
         train_loader_id_friend, train_loader_rec_friend, val_loader_rec_friend = get_loader(args, tokenizer, TrainSetID_friend, TrainSetRec_friend, ValSetRec=ValSetRec_friend)
         
         runner_item = SingleRunner(
@@ -100,14 +85,7 @@ def single_main():
         )
     else:
         logging.info(f"Running {args.run_type}")
-        # get_dataset_generative now returns validation datasets for all run types
-        result = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False)
-        if len(result) == 3:
-            TrainSetID_item, TrainSetRec, ValSetRec = result
-        else:
-            TrainSetID_item, TrainSetRec = result
-            ValSetRec = None
-        
+        TrainSetID_item, TrainSetRec, ValSetRec = get_dataset_generative(args, model_gen_item, tokenizer, regenerate=False)
         train_loader_id, train_loader_rec, val_loader_rec = get_loader(args, tokenizer, TrainSetID_item, TrainSetRec, ValSetRec=ValSetRec)
         runner_item = SingleRunner(
             model_rec=model_rec,
@@ -128,10 +106,6 @@ def single_main():
                 logging.info(f'Train Recommender (friend) Round {round_num + 1}')
                 runner_friend._train_recommender_phase(round_num)
                 friend_phase = runner_friend.total_id_epoch
-                social_user_index_file = os.path.join(args.data_path, args.datasets, args.run_id, f'user_generative_index_phase_{friend_phase}_social.txt')
-                social_item_index_file = os.path.join(args.data_path, args.datasets, args.run_id, f'item_generative_indexing_phase_{friend_phase}_social.txt')
-                logging.info(f'Friend user index file (phase {friend_phase}): {os.path.exists(social_user_index_file)}')
-                logging.info(f'Friend index file (phase {friend_phase}): {os.path.exists(social_item_index_file)}')
                 if args.social_quantization_id:
                     logging.info(f'Creating initial item user index files for Round {round_num + 1}')
                     user_sequence = utils.ReadLineFromFile(os.path.join(args.data_path, args.datasets, 'user_sequence.txt'))
@@ -163,21 +137,13 @@ def single_main():
                         round_num=round_num,  # Pass round number to create round-specific cross-social index
                     )
                     logging.info(f'Generated cross-social index for {len(cross_social_map)} users')
-                else:
-                    logging.info(f'Cross-social index generation skipped (social_quantization_id={getattr(args, "social_quantization_id", 0)})')
                 
-                enhancement_note = " (with cross-social enhancement)" if args.social_quantization_id else ""
-                logging.info(f'Train IDGen (item{enhancement_note}) Round {round_num + 1}')
+                logging.info(f'Train IDGen (item) Round {round_num + 1}')
                 runner_item._train_id_generator_phase(round_num)
-                logging.info(f'Train Recommender (item{enhancement_note}) Round {round_num + 1}')
+                logging.info(f'Train Recommender (item) Round {round_num + 1}')
                 runner_item._train_recommender_phase(round_num)
-                item_phase = runner_item.total_id_epoch
-                user_index_file = os.path.join(args.data_path, args.datasets, args.run_id, f'user_generative_index_phase_{item_phase}_item.txt')
-                item_index_file = os.path.join(args.data_path, args.datasets, args.run_id, f'item_generative_indexing_phase_{item_phase}_item.txt')
-                logging.info(f'Item user index file (phase {item_phase}): {os.path.exists(user_index_file)}')
-                logging.info(f'Item index file (phase {item_phase}): {os.path.exists(item_index_file)}')
-                
-                logging.info(f"========== Finished 2id2rec Round {round_num + 1}/{args.rounds} ==========")
+
+                logging.info(f"========== Finished {args.run_type} Round {round_num + 1}/{args.rounds} ==========")
                 if args.model_path: 
                     os.makedirs(args.model_path, exist_ok=True)
                     logging.info(f"Model directory ensured: {args.model_path}")
@@ -205,7 +171,7 @@ def single_main():
         wandb.finish()
     else:
         logging.info('*'*80)
-        if getattr(args, 'social_model_path', None) and getattr(args, 'rec_model_path', None):
+        if getattr(args, 'social_model_path', None) or getattr(args, 'rec_model_path', None):
             runner_item._test_recommender()
     
 if __name__ == "__main__":

@@ -11,40 +11,23 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
     datasets = args.datasets.split(',')
     train_all_datasets_id = []
     train_all_datasets_rec = []
+    validation_all_datasets_rec = []
     if args.run_type == 'original_idgenrec':
         logging.info(f"Running original idgenrec")
         for data in datasets:
             TrainDatasetRec = MultiTaskDatasetRec(args, data, 'train', model_gen, tokenizer, phase, regenerate=regenerate)
             TrainDatasetID = MultiTaskDatasetGen(args, data, 'train', phase, model_gen, tokenizer)        
+            ValDatasetRec = MultiTaskDatasetRec(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False)
             train_all_datasets_id.append(TrainDatasetID)
             train_all_datasets_rec.append(TrainDatasetRec)
+            validation_all_datasets_rec.append(ValDatasetRec)
+        
         TrainSetID = ConcatDataset(train_all_datasets_id)
         logging.info(f"TrainSetID: {len(TrainSetID)}")
-        logging.info(TrainSetID[0])
         TrainSetRec = ConcatDataset(train_all_datasets_rec)
         logging.info(f"TrainSetRec: {len(TrainSetRec)}")
-        logging.info(TrainSetRec[0])
-        
-        # Create validation datasets
-        validation_datasets = []
-        for train_dataset in train_all_datasets_rec:
-            if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                val_dataset = MultiTaskDatasetRec(
-                    train_dataset.args,
-                    train_dataset.dataset,
-                    'validation',
-                    train_dataset.model_gen,
-                    train_dataset.tokenizer,
-                    phase=train_dataset.phase,
-                    regenerate=False,
-                    component=train_dataset.component
-                )
-                validation_datasets.append(val_dataset)
-                logging.info(f"Created validation dataset for {train_dataset.dataset}: {len(val_dataset)} samples")
-        
-        ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
-        if ValSetRec:
-            logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
+        ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
+        logging.info(f"ValidationSetRec: {len(ValSetRec)}")
         return TrainSetID, TrainSetRec, ValSetRec
     elif args.run_type == 'social_to_rec':
         logging.info(f"Running social to rec")
@@ -55,30 +38,20 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
             train_all_datasets_id.append(TrainDatasetID)
             train_all_datasets_rec.append(TrainDatasetRecSocial)
             train_all_datasets_rec.append(TrainDatasetRec)
+            
+            # Create validation datasets
+            ValDatasetRec = MultiTaskDatasetRec(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False)
+            ValDatasetRecSocial = MultiTaskDatasetRecSocial(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False)
+            validation_all_datasets_rec.append(ValDatasetRecSocial)
+            validation_all_datasets_rec.append(ValDatasetRec)
+            logging.info(f"Created validation datasets for {data}: {len(ValDatasetRec)} + {len(ValDatasetRecSocial)} samples")
+        
         TrainSetID = ConcatDataset(train_all_datasets_id)
         logging.info(f"TrainSetID: {len(TrainSetID)}")
         TrainSetRec = ConcatDataset(train_all_datasets_rec)
         logging.info(f"TrainSetRec: {len(TrainSetRec)}")
         
-        # Create validation datasets
-        validation_datasets = []
-        for train_dataset in train_all_datasets_rec:
-            if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                if isinstance(train_dataset, MultiTaskDatasetRecSocial):
-                    val_dataset = MultiTaskDatasetRecSocial(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                else:
-                    val_dataset = MultiTaskDatasetRec(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                validation_datasets.append(val_dataset)
-                logging.info(f"Created validation dataset for {train_dataset.dataset}: {len(val_dataset)} samples")
-        ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
+        ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
         if ValSetRec:
             logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
         return TrainSetID, TrainSetRec, ValSetRec
@@ -92,30 +65,18 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
             train_all_datasets_id.append(TrainDatasetID)
             train_all_datasets_id.append(TrainDatasetSocial)
             train_all_datasets_rec.append(TrainDatasetRec)
+            
+            # Create validation dataset
+            ValDatasetRec = MultiTaskDatasetRec(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False)
+            validation_all_datasets_rec.append(ValDatasetRec)
+            logging.info(f"Created validation dataset for {data}: {len(ValDatasetRec)} samples")
+        
         TrainSetID = ConcatDataset(train_all_datasets_id)
         logging.info(f"TrainSetID: {len(TrainSetID)}")
         TrainSetRec = ConcatDataset(train_all_datasets_rec)
         logging.info(f"TrainSetRec: {len(TrainSetRec)}")
         
-        # Create validation datasets
-        validation_datasets = []
-        for train_dataset in train_all_datasets_rec:
-            if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                if isinstance(train_dataset, MultiTaskDatasetRecSocial):
-                    val_dataset = MultiTaskDatasetRecSocial(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                else:
-                    val_dataset = MultiTaskDatasetRec(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                validation_datasets.append(val_dataset)
-                logging.info(f"Created validation dataset for {train_dataset.dataset}: {len(val_dataset)} samples")
-        ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
+        ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
         if ValSetRec:
             logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
         return TrainSetID, TrainSetRec, ValSetRec
@@ -130,137 +91,62 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
             train_all_datasets_id.append(TrainDatasetSocial)
             train_all_datasets_rec.append(TrainDatasetRecSocial)
             train_all_datasets_rec.append(TrainDatasetRec)
+            
+            # Create validation datasets
+            ValDatasetRec = MultiTaskDatasetRec(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False)
+            ValDatasetRecSocial = MultiTaskDatasetRecSocial(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False)
+            validation_all_datasets_rec.append(ValDatasetRecSocial)
+            validation_all_datasets_rec.append(ValDatasetRec)
+            logging.info(f"Created validation datasets for {data}: {len(ValDatasetRec)} + {len(ValDatasetRecSocial)} samples")
+        
         TrainSetID = ConcatDataset(train_all_datasets_id)
         logging.info(f"TrainSetID: {len(TrainSetID)}")
         TrainSetRec = ConcatDataset(train_all_datasets_rec)
         logging.info(f"TrainSetRec: {len(TrainSetRec)}")
         
-        # Create validation datasets
-        validation_datasets = []
-        for train_dataset in train_all_datasets_rec:
-            if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                if isinstance(train_dataset, MultiTaskDatasetRecSocial):
-                    val_dataset = MultiTaskDatasetRecSocial(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                else:
-                    val_dataset = MultiTaskDatasetRec(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                validation_datasets.append(val_dataset)
-                logging.info(f"Created validation dataset for {train_dataset.dataset}: {len(val_dataset)} samples")
-        ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
+        ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
         if ValSetRec:
             logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
         return TrainSetID, TrainSetRec, ValSetRec
-    elif args.run_type == '1id2rec':
-        logging.info("Train IDGenerator on both item rec and friend rec")
-        train_all_datasets_social = []
-        train_all_datasets_rec_social = []
-        for data in datasets:
-            TrainDatasetRec = MultiTaskDatasetRec(args, data, 'train', model_gen, tokenizer, phase, regenerate=regenerate)
-            TrainDatasetID = MultiTaskDatasetGen(args, data, 'train', phase, model_gen, tokenizer)  
-            TrainDatasetSocial = MultiTaskDatasetSocial(args, data, 'train', phase, model_gen, tokenizer)
-            TrainDatasetRecSocial = MultiTaskDatasetRecSocial(args, data, 'train', model_gen, tokenizer, phase, regenerate=regenerate)
-            train_all_datasets_id.append(TrainDatasetID)
-            train_all_datasets_social.append(TrainDatasetSocial)
-            train_all_datasets_rec_social.append(TrainDatasetRecSocial)
-            train_all_datasets_rec.append(TrainDatasetRec)        
-        TrainSetID = ConcatDataset(train_all_datasets_id)
-        logging.info(f"TrainSetID: {len(TrainSetID)}")
-        TrainSetRec = ConcatDataset(train_all_datasets_rec)
-        logging.info(f"TrainSetRec: {len(TrainSetRec)}")
-        TrainSetRecSocial = ConcatDataset(train_all_datasets_rec_social)    
-        logging.info(f"TrainSetRecSocial: {len(TrainSetRecSocial)}")    
-        TrainSetSocial = ConcatDataset(train_all_datasets_social)
-        logging.info(f"TrainSetSocial: {len(TrainSetSocial)}")
-        logging.info(f"TrainSetID (idgenrec social): {len(TrainSetID)}")
-        logging.info(f"TrainSetRec (idgenrec social): {len(TrainSetRec)}")
-        logging.info(f"TrainSetRecSocial (idgenrec social): {len(TrainSetRecSocial)}")
-        logging.info(f"TrainSetSocial (idgenrec social): {len(TrainSetSocial)}")
-        
-        # Create validation datasets for both item and social rec
-        validation_datasets = []
-        for train_dataset in train_all_datasets_rec:
-            if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                val_dataset = MultiTaskDatasetRec(
-                    train_dataset.args, train_dataset.dataset, 'validation',
-                    train_dataset.model_gen, train_dataset.tokenizer,
-                    phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                )
-                validation_datasets.append(val_dataset)
-        for train_dataset in train_all_datasets_rec_social:
-            if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                val_dataset = MultiTaskDatasetRecSocial(
-                    train_dataset.args, train_dataset.dataset, 'validation',
-                    train_dataset.model_gen, train_dataset.tokenizer,
-                    phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                )
-                validation_datasets.append(val_dataset)
-        ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
-        if ValSetRec:
-            logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
-        return TrainSetID, TrainSetRec, TrainSetRecSocial, TrainSetSocial, ValSetRec
     elif args.run_type == '2id2rec':
         if component == 'item_rec':
             logging.info("Train IDGenerator on item rec")
             train_all_datasets_id = []
             train_all_datasets_rec = []
+            validation_all_datasets_rec = []
             for data in datasets:
                 TrainDatasetRec = MultiTaskDatasetRec(args, data, 'train', model_gen, tokenizer, phase, regenerate=regenerate, component='item_rec')
                 TrainDatasetID = MultiTaskDatasetGen(args, data, 'train', phase, model_gen, tokenizer, component='item_rec')  
+                ValDatasetRec = MultiTaskDatasetRec(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False, component='item_rec')
                 train_all_datasets_id.append(TrainDatasetID)
                 train_all_datasets_rec.append(TrainDatasetRec)
+                validation_all_datasets_rec.append(ValDatasetRec)
+            
             TrainSetID = ConcatDataset(train_all_datasets_id)
             TrainSetRec = ConcatDataset(train_all_datasets_rec)
+            ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
             logging.info(f"TrainSetID (idgenrec itemrec): {len(TrainSetID)}")
             logging.info(f"TrainSetRec (idgenrec itemrec): {len(TrainSetRec)}")
-            
-            # Create validation datasets
-            validation_datasets = []
-            for train_dataset in train_all_datasets_rec:
-                if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                    val_dataset = MultiTaskDatasetRec(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                    validation_datasets.append(val_dataset)
-            ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
-            if ValSetRec:
-                logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
+            logging.info(f"ValidationSetRec (itemrec): {len(ValSetRec)}")
             return TrainSetID, TrainSetRec, ValSetRec
         elif component == 'friend_rec':
             logging.info("Train IDGenerator on friend rec")
             train_all_datasets_id = []
             train_all_datasets_rec = []
+            validation_all_datasets_rec = []
             for data in datasets:
                 TrainDatasetRec = MultiTaskDatasetRecSocial(args, data, 'train', model_gen, tokenizer, phase, regenerate=regenerate, component='friend_rec')
                 TrainDatasetID = MultiTaskDatasetSocial(args, data, 'train', phase, model_gen, tokenizer, component='friend_rec')  
+                ValDatasetRec = MultiTaskDatasetRecSocial(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False, component='friend_rec')
                 train_all_datasets_id.append(TrainDatasetID)
                 train_all_datasets_rec.append(TrainDatasetRec)
+                validation_all_datasets_rec.append(ValDatasetRec)
             TrainSetID = ConcatDataset(train_all_datasets_id)
             TrainSetRec = ConcatDataset(train_all_datasets_rec)
-            logging.info(f"TrainSetID (idgenrec friendrec): {len(TrainSetID)}")
-            logging.info(f"TrainSetRec (idgenrec friendrec): {len(TrainSetRec)}")
-            
-            # Create validation datasets
-            validation_datasets = []
-            for train_dataset in train_all_datasets_rec:
-                if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                    val_dataset = MultiTaskDatasetRecSocial(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                    validation_datasets.append(val_dataset)
-            ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
-            if ValSetRec:
-                logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
+            ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
+            logging.info(f"TrainSetID (friendrec): {len(TrainSetID)}")
+            logging.info(f"TrainSetRec (friendrec): {len(TrainSetRec)}")
+            logging.info(f"ValidationSetRec (friendrec): {len(ValSetRec)}")
             return TrainSetID, TrainSetRec, ValSetRec
         else:
             raise ValueError(f"run_type '2id2rec' requires component to be 'item_rec' or 'friend_rec', got: {component}")
@@ -270,6 +156,7 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
             train_all_datasets_id = []
             train_all_datasets_rec = []
             train_all_datasets_social = []
+            validation_all_datasets_rec = []
             for data in datasets:
                 TrainDatasetRec = MultiTaskDatasetRec(args, data, 'train', model_gen, tokenizer, phase, regenerate=regenerate, component='item_rec')
                 TrainDatasetID = MultiTaskDatasetGen(args, data, 'train', phase, model_gen, tokenizer, component='item_rec')  
@@ -277,30 +164,22 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
                 train_all_datasets_id.append(TrainDatasetID)
                 train_all_datasets_rec.append(TrainDatasetRec)
                 train_all_datasets_id.append(TrainDatasetSocial)
+                ValDatasetRec = MultiTaskDatasetRec(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False, component='item_rec')
+                validation_all_datasets_rec.append(ValDatasetRec)
+            
             TrainSetID = ConcatDataset(train_all_datasets_id)
             TrainSetRec = ConcatDataset(train_all_datasets_rec)
-            logging.info(f"TrainSetID (idgenrec itemrec): {len(TrainSetID)}")
-            logging.info(f"TrainSetRec (idgenrec itemrec): {len(TrainSetRec)}")
-            
-            # Create validation datasets
-            validation_datasets = []
-            for train_dataset in train_all_datasets_rec:
-                if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                    val_dataset = MultiTaskDatasetRec(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                    validation_datasets.append(val_dataset)
-            ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
-            if ValSetRec:
-                logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
+            ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
+            logging.info(f"TrainSetID (itemrec): {len(TrainSetID)}")
+            logging.info(f"TrainSetRec (itemrec): {len(TrainSetRec)}")
+            logging.info(f"ValidationSetRec (itemrec): {len(ValSetRec)}")
             return TrainSetID, TrainSetRec, ValSetRec
         elif component == 'friend_rec':
             logging.info("Train IDGenerator on friend rec")
             train_all_datasets_id = []
             train_all_datasets_rec = []
             train_all_datasets_social = []
+            validation_all_datasets_rec = []
             for data in datasets:
                 TrainDatasetRec = MultiTaskDatasetRecSocial(args, data, 'train', model_gen, tokenizer, phase, regenerate=regenerate, component='friend_rec')
                 TrainDatasetID = MultiTaskDatasetGen(args, data, 'train', phase, model_gen, tokenizer, component='friend_rec')  
@@ -308,24 +187,15 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
                 train_all_datasets_id.append(TrainDatasetID)
                 train_all_datasets_id.append(TrainDatasetSocial)
                 train_all_datasets_rec.append(TrainDatasetRec)
+                ValDatasetRec = MultiTaskDatasetRecSocial(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False, component='friend_rec')
+                validation_all_datasets_rec.append(ValDatasetRec)
+            
             TrainSetID = ConcatDataset(train_all_datasets_id)
             TrainSetRec = ConcatDataset(train_all_datasets_rec)
-            logging.info(f"TrainSetID (idgenrec friendrec): {len(TrainSetID)}")
-            logging.info(f"TrainSetRec (idgenrec friendrec): {len(TrainSetRec)}")
-            
-            # Create validation datasets
-            validation_datasets = []
-            for train_dataset in train_all_datasets_rec:
-                if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                    val_dataset = MultiTaskDatasetRecSocial(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                    validation_datasets.append(val_dataset)
-            ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
-            if ValSetRec:
-                logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
+            ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
+            logging.info(f"TrainSetID (friendrec): {len(TrainSetID)}")
+            logging.info(f"TrainSetRec (friendrec): {len(TrainSetRec)}")
+            logging.info(f"ValidationSetRec (friendrec): {len(ValSetRec)}")
             return TrainSetID, TrainSetRec, ValSetRec
         else:
             raise ValueError(f"run_type '2id2rec_socialtoid' requires component to be 'item_rec' or 'friend_rec', got: {component}")
@@ -339,22 +209,18 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
                 TrainDatasetID = MultiTaskDatasetGen(args, data, 'train', phase, model_gen, tokenizer, component='item_view')  
                 train_all_datasets_id.append(TrainDatasetID)
                 train_all_datasets_rec.append(TrainDatasetRec)
+                
+                # Create validation dataset
+                ValDatasetRec = MultiTaskDatasetRec(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False, component='item_view')
+                validation_all_datasets_rec.append(ValDatasetRec)
+                logging.info(f"Created validation dataset for {data}: {len(ValDatasetRec)} samples")
+            
             TrainSetID = ConcatDataset(train_all_datasets_id)
             TrainSetRec = ConcatDataset(train_all_datasets_rec)
             logging.info(f"TrainSetID (item view): {len(TrainSetID)}")
             logging.info(f"TrainSetRec (item view): {len(TrainSetRec)}")
             
-            # Create validation datasets
-            validation_datasets = []
-            for train_dataset in train_all_datasets_rec:
-                if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                    val_dataset = MultiTaskDatasetRec(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                    validation_datasets.append(val_dataset)
-            ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
+            ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
             if ValSetRec:
                 logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
             return TrainSetID, TrainSetRec, ValSetRec
@@ -367,22 +233,18 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
                 TrainDatasetID = MultiTaskDatasetSocial(args, data, 'train', phase, model_gen, tokenizer, component='social_view')  
                 train_all_datasets_id.append(TrainDatasetID)
                 train_all_datasets_rec.append(TrainDatasetRec)
+                
+                # Create validation dataset
+                ValDatasetRec = MultiTaskDatasetRecSocial(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False, component='social_view')
+                validation_all_datasets_rec.append(ValDatasetRec)
+                logging.info(f"Created validation dataset for {data}: {len(ValDatasetRec)} samples")
+            
             TrainSetID = ConcatDataset(train_all_datasets_id)
             TrainSetRec = ConcatDataset(train_all_datasets_rec)
             logging.info(f"TrainSetID (social view): {len(TrainSetID)}")
             logging.info(f"TrainSetRec (social view): {len(TrainSetRec)}")
             
-            # Create validation datasets
-            validation_datasets = []
-            for train_dataset in train_all_datasets_rec:
-                if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                    val_dataset = MultiTaskDatasetRecSocial(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                    validation_datasets.append(val_dataset)
-            ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
+            ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
             if ValSetRec:
                 logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
             return TrainSetID, TrainSetRec, ValSetRec
@@ -397,22 +259,18 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
             TrainDatasetID = MultiTaskDatasetSocial(args, data, 'train', phase, model_gen, tokenizer, component='friend_rec')  
             train_all_datasets_id.append(TrainDatasetID)
             train_all_datasets_rec.append(TrainDatasetRec)
+            
+            # Create validation dataset
+            ValDatasetRec = MultiTaskDatasetRecSocial(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False, component='friend_rec')
+            validation_all_datasets_rec.append(ValDatasetRec)
+            logging.info(f"Created validation dataset for {data}: {len(ValDatasetRec)} samples")
+        
         TrainSetID = ConcatDataset(train_all_datasets_id)
         TrainSetRec = ConcatDataset(train_all_datasets_rec)
         logging.info(f"TrainSetID (idgenrec friend): {len(TrainSetID)}")
         logging.info(f"TrainSetRec (idgenrec friend): {len(TrainSetRec)}")
         
-        # Create validation datasets
-        validation_datasets = []
-        for train_dataset in train_all_datasets_rec:
-            if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                val_dataset = MultiTaskDatasetRecSocial(
-                    train_dataset.args, train_dataset.dataset, 'validation',
-                    train_dataset.model_gen, train_dataset.tokenizer,
-                    phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                )
-                validation_datasets.append(val_dataset)
-        ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
+        ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
         if ValSetRec:
             logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
         return TrainSetID, TrainSetRec, ValSetRec
@@ -426,22 +284,18 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
             train_all_datasets_id.append(TrainDatasetID)
             train_all_datasets_id.append(TrainDatasetSocial)
             train_all_datasets_rec.append(TrainDatasetRecSocial)
+            
+            # Create validation dataset
+            ValDatasetRecSocial = MultiTaskDatasetRecSocial(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False, component='friend_rec')
+            validation_all_datasets_rec.append(ValDatasetRecSocial)
+            logging.info(f"Created validation dataset for {data}: {len(ValDatasetRecSocial)} samples")
+        
         TrainSetID = ConcatDataset(train_all_datasets_id)
         TrainSetRec = ConcatDataset(train_all_datasets_rec)
         logging.info(f"TrainSetID (item to id friendrec): {len(TrainSetID)}")
         logging.info(f"TrainSetRec (item to id friendrec): {len(TrainSetRec)}")
         
-        # Create validation datasets
-        validation_datasets = []
-        for train_dataset in train_all_datasets_rec:
-            if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                val_dataset = MultiTaskDatasetRecSocial(
-                    train_dataset.args, train_dataset.dataset, 'validation',
-                    train_dataset.model_gen, train_dataset.tokenizer,
-                    phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                )
-                validation_datasets.append(val_dataset)
-        ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
+        ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
         if ValSetRec:
             logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
         return TrainSetID, TrainSetRec, ValSetRec
@@ -454,34 +308,25 @@ def get_dataset_generative(args, model_gen, tokenizer, phase=0, regenerate=True,
             train_all_datasets_id.append(TrainDatasetID)
             train_all_datasets_rec.append(TrainDatasetRec)
             train_all_datasets_rec.append(TrainDatasetRecSocial)
+            
+            # Create validation datasets
+            ValDatasetRec = MultiTaskDatasetRec(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False)
+            ValDatasetRecSocial = MultiTaskDatasetRecSocial(args, data, 'validation', model_gen, tokenizer, phase, regenerate=False, component='friend_rec')
+            validation_all_datasets_rec.append(ValDatasetRec)
+            validation_all_datasets_rec.append(ValDatasetRecSocial)
+            logging.info(f"Created validation datasets for {data}: {len(ValDatasetRec)} + {len(ValDatasetRecSocial)} samples")
+        
         TrainSetID = ConcatDataset(train_all_datasets_id)
         TrainSetRec = ConcatDataset(train_all_datasets_rec)
         logging.info(f"TrainSetID (item to rec friendrec): {len(TrainSetID)}")
         logging.info(f"TrainSetRec (item to rec friendrec): {len(TrainSetRec)}")
         
-        # Create validation datasets
-        validation_datasets = []
-        for train_dataset in train_all_datasets_rec:
-            if hasattr(train_dataset, 'valid_data_samples') and len(train_dataset.valid_data_samples) > 0:
-                if isinstance(train_dataset, MultiTaskDatasetRecSocial):
-                    val_dataset = MultiTaskDatasetRecSocial(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                else:
-                    val_dataset = MultiTaskDatasetRec(
-                        train_dataset.args, train_dataset.dataset, 'validation',
-                        train_dataset.model_gen, train_dataset.tokenizer,
-                        phase=train_dataset.phase, regenerate=False, component=train_dataset.component
-                    )
-                validation_datasets.append(val_dataset)
-        ValSetRec = ConcatDataset(validation_datasets) if validation_datasets else None
+        ValSetRec = ConcatDataset(validation_all_datasets_rec) if validation_all_datasets_rec else None
         if ValSetRec:
             logging.info(f"ValidationSetRec: {len(ValSetRec)} total samples")
         return TrainSetID, TrainSetRec, ValSetRec
     else:
-        raise ValueError(f"Unsupported run_type: {args.run_type}. Supported types: 'original_idgenrec', 'social_to_rec', 'social_to_id', 'social_to_both', '1id2rec', '2id2rec', '2id2rec_socialtoid', '2id1rec', 'idgenrec_friend', 'item_to_id_friendrec', 'item_to_rec_friendrec'")
+        raise ValueError(f"Unsupported run_type: {args.run_type}. Supported types: 'original_idgenrec', 'social_to_rec', 'social_to_id', 'social_to_both', '2id2rec', '2id2rec_socialtoid', '2id1rec', 'idgenrec_friend', 'item_to_id_friendrec', 'item_to_rec_friendrec'")
 
 def get_loader(args, tokenizer, TrainSetID, TrainSetRec, TrainSetRecSocial=None, TrainSetSocial=None, ValSetRec=None):
     collator_gen = CollatorGen(tokenizer)
@@ -513,28 +358,11 @@ def get_loader(args, tokenizer, TrainSetID, TrainSetRec, TrainSetRecSocial=None,
         )
         logging.info(f"Created validation loader with {len(ValSetRec)} samples")
     
-    if args.run_type == '1id2rec' and TrainSetSocial is not None and TrainSetRecSocial is not None:
-        collator_social = CollatorGen(tokenizer)
-        collator_rec_social = Collator(tokenizer, args=args)
-        train_sampler_social = SingleMultiDataTaskSampler(TrainSetSocial, args.social_batch_size, args.seed, shuffle=True)
-        train_sampler_rec_social = SingleMultiDataTaskSampler(TrainSetRecSocial, args.rec_batch_size, args.seed, shuffle=True)
-        train_loader_social = DataLoader(dataset=TrainSetSocial, sampler=train_sampler_social, batch_size=args.social_batch_size, collate_fn=collator_social, shuffle=False, num_workers=args.num_workers, pin_memory=True, prefetch_factor=args.prefetch_factor, persistent_workers=args.num_workers > 0)
-        train_loader_rec_social = DataLoader(dataset=TrainSetRecSocial, sampler=train_sampler_rec_social, batch_size=args.rec_batch_size, collate_fn=collator_rec_social, shuffle=False, num_workers=args.num_workers, pin_memory=True, prefetch_factor=args.prefetch_factor, persistent_workers=args.num_workers > 0)
-        return train_loader_id, train_loader_rec, train_loader_rec_social, train_loader_social, None
-
-    if (args.run_type == '2id2rec' or args.run_type == '2id2rec_socialtoid') and TrainSetSocial is not None and TrainSetRecSocial is not None:
-        collator_social = CollatorGen(tokenizer)
-        collator_rec_social = Collator(tokenizer, args=args)
-        train_sampler_social = SingleMultiDataTaskSampler(TrainSetSocial, args.social_batch_size, args.seed, shuffle=True)
-        train_sampler_rec_social = SingleMultiDataTaskSampler(TrainSetRecSocial, args.rec_batch_size, args.seed, shuffle=True)
-        train_loader_social = DataLoader(dataset=TrainSetSocial, sampler=train_sampler_social, batch_size=args.social_batch_size, collate_fn=collator_social, shuffle=False, num_workers=args.num_workers, pin_memory=True, prefetch_factor=args.prefetch_factor, persistent_workers=args.num_workers > 0)
-        train_loader_rec_social = DataLoader(dataset=TrainSetRecSocial, sampler=train_sampler_rec_social, batch_size=args.rec_batch_size, collate_fn=collator_rec_social, shuffle=False, num_workers=args.num_workers, pin_memory=True, prefetch_factor=args.prefetch_factor, persistent_workers=args.num_workers > 0)
-        return train_loader_id, train_loader_rec, train_loader_rec_social, train_loader_social, None
-    
+    # Handle case where only TrainSetRecSocial is provided (no TrainSetID or TrainSetRec)
     if TrainSetRecSocial is not None and TrainSetID is None and TrainSetRec is None:
         collator_rec_social = Collator(tokenizer, args=args)
         train_sampler_rec_social = SingleMultiDataTaskSampler(TrainSetRecSocial, args.rec_batch_size, args.seed, shuffle=True)
         train_loader_rec_social = DataLoader(dataset=TrainSetRecSocial, sampler=train_sampler_rec_social, batch_size=args.rec_batch_size, collate_fn=collator_rec_social, shuffle=False, num_workers=args.num_workers, pin_memory=True, prefetch_factor=args.prefetch_factor, persistent_workers=args.num_workers > 0)
-        return train_loader_id, train_loader_rec, train_loader_rec_social, None, None
+        return train_loader_id, train_loader_rec, train_loader_rec_social, None, val_loader_rec
     
     return train_loader_id, train_loader_rec, val_loader_rec

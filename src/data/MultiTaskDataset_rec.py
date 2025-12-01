@@ -62,7 +62,7 @@ class MultiTaskDatasetRec(Dataset):
         self.cross_view_dict = {}
         if self.args.use_diffusion and args.run_type in ['2id2rec', '2id2rec_socialtoid']:
             social_suffix = '_social'
-            social_user_index_file = os.path.join(run_dir, f'user_generative_index_phase_{phase}{social_suffix}.txt')
+            social_user_index_file = os.path.join(self.data_path, self.dataset, args.run_id, f'user_generative_index_phase_{phase}{social_suffix}.txt')
             if os.path.exists(social_user_index_file):
                 social_user_dict = indexing.get_dict_from_lines(utils.ReadLineFromFile(social_user_index_file))
                 friend_sequence_lines = utils.ReadLineFromFile(os.path.join(self.data_path, self.dataset, 'friend_sequence.txt'))
@@ -261,6 +261,8 @@ class MultiTaskDatasetRec(Dataset):
             'user_idx': self.data_samples[sample_idx]['user_id']
         }
         if self.args.use_diffusion:
-            result['cross_view_tokens'] = self.cross_view_dict[self.data_samples[sample_idx]['user_id']]
+            # Use original_user_id since cross_view_dict is keyed by original user IDs
+            original_user_id = self.data_samples[sample_idx]['original_user_id']
+            result['cross_view_tokens'] = self.cross_view_dict.get(original_user_id, '')
         return result
 

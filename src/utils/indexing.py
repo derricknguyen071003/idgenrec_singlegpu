@@ -80,6 +80,7 @@ def generative_indexing_rec(data_path, dataset, user_sequence_dict, model_gen, t
     os.makedirs(run_dir, exist_ok=True)
     if run_type == '2id2rec' or run_type == '2id2rec_socialtoid':
         suffix = '_item' if component == 'item_rec' else '_social'    
+    else: suffix = ''
     item_index_file = os.path.join(run_dir, f'item_generative_indexing_phase_{phase}{suffix}.txt')
     user_index_file = os.path.join(run_dir, f'user_generative_index_phase_{phase}{suffix}.txt') 
     if phase == 0:
@@ -116,7 +117,7 @@ def generative_indexing_social(data_path, dataset, friend_sequence_dict, phase=0
             suffix = '_item'
         elif component == 'friend_rec':
             suffix = '_social'
-    
+    else: suffix = ''
     # Filter users to only include those that will have training data
     # Skip users with <= 3 friends (after split: len==1->1 train, len==2->1 train, len==3->1 train, all skipped)
     # Only len>=4 gives >=2 training friends (not skipped in load_train)
@@ -370,7 +371,7 @@ def generate_user_id_from_text(item_map, user_index_file, user_sequence_file, mo
         found = False
         dp = 1.
         min_l = 1
-        logging.info(f"Generating user id for {uid} with text: {text}")
+        #logging.info(f"Generating user id for {uid} with text: {text}")
         if text is None or text == "":
             logging.warning(f"Text is None or empty for user {uid}")
             continue
@@ -401,7 +402,7 @@ def generate_user_id_from_text(item_map, user_index_file, user_sequence_file, mo
             if dp >= 10:
                 min_l += 10
                 dp = 1.
-        logging.info(f'New id: {gen_id} for user {uid}')
+        #logging.info(f'New id: {gen_id} for user {uid}')
     with open(user_index_file, "w") as f:
         for uid, gen_id in user_id_dict.items():
             f.write(f"{uid} {gen_id}\n")

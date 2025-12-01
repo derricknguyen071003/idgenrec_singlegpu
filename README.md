@@ -1,3 +1,5 @@
+Brainstorm: Text invariant learning (instead of learning the most robust structure, we learn the most robust ID)
+
 # IDGenRec with Discrete Diffusion
 
 A single-GPU implementation of IDGenRec (ID Generation and Recommendation) enhanced with discrete diffusion for sequential recommendation tasks. This codebase integrates discrete diffusion processes to improve recommendation quality through noise prediction and cross-view alignment.

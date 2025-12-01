@@ -1,7 +1,6 @@
 import numpy as np
 import os
 import pickle
-import argparse
 import inspect
 import logging
 import sys
@@ -57,7 +56,7 @@ def parse_global_args(parser):
     parser.add_argument("--use_friend_seq", type=int, default=0, help="use friend sequence")
     parser.add_argument("--random_remove_friend", type=float, default=0.0, help="randomly remove friend connections (0.0 to 1.0, percentage of connections to remove)")
     parser.add_argument("--phase", type=int, default=0, help="phase")
-    parser.add_argument("--run_type", type=str, default="original_idgenrec", help="choose from original_idgenrec, social_to_rec, social_to_id, social_to_both, 1id2rec, 2id2rec, 2id1rec")
+    parser.add_argument("--run_type", type=str, default="original_idgenrec", help="choose from original_idgenrec, social_to_rec, social_to_id, social_to_both, 2id2rec, 2id2rec_socialtoid, 2id1rec, idgenrec_friend, item_to_id_friendrec, item_to_rec_friendrec")
     
     # Dataset arguments
     parser.add_argument("--data_path", type=str, default='../rec_datasets', help="data directory")
