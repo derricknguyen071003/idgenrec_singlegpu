@@ -16,7 +16,6 @@ social_sample_prompt=${social_sample_prompt:-1}
 gradient_accumulation_steps=${gradient_accumulation_steps:-4}
 lambda_mask=${lambda_mask:-1}
 lambda_kl=${lambda_kl:-0.1}
-echo "lambda_mask $lambda_mask and lambda_kl $lambda_kl"
 # Optuna hyperparameter tuning
 use_optuna=${use_optuna:-0}
 optuna_n_trials=${optuna_n_trials:-20}
@@ -27,17 +26,23 @@ optuna_pruner=${optuna_pruner:-"median"}
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=false
 
-if [[ "$datasets" == "yelp_30_2_5" ]]; then
-  id_batch_size=8
-  rec_batch_size=12
-  social_batch_size=8
-  echo "Using id_batch_size $id_batch_size and rec_batch_size $rec_batch_size and social_batch_size $social_batch_size"
+if [[ "$datasets" == "yelp300_5_5" ]]; then
+  id_batch_size=1
+  rec_batch_size=2
+  social_batch_size=4
+  lambda_mask=3
+  lambda_kl=0.02
+  max_his=10
+  echo "Using id_batch_size $id_batch_size and rec_batch_size $rec_batch_size and lambda_mask $lambda_mask and lambda_kl $lambda_kl and max_his $max_his"
 fi
-if [[ "$datasets" == "lastfm_full_10_10" || "$datasets" == "deli_full_10_10" || "$datasets" == "lastfm4i" || "$datasets" == "lastfm" ]]; then
+if [[ "$datasets" == "lastfm_full_10_10" || "$datasets" == "delicious" || "$datasets" == "lastfm4i" || "$datasets" == "lastfm" ]]; then
     id_batch_size=16
     rec_batch_size=32
     social_batch_size=16
-  echo "Using id_batch_size $id_batch_size and rec_batch_size $rec_batch_size and social_batch_size $social_batch_size"
+    lambda_mask=1
+    lambda_kl=0.1
+    max_his=20
+  echo "Using id_batch_size $id_batch_size and rec_batch_size $rec_batch_size and lambda_mask $lambda_mask and lambda_kl $lambda_kl and max_his $max_his"
 fi
 
 if [[ "$use_optuna" == "1" ]]; then
@@ -61,7 +66,7 @@ if [[ "$use_optuna" == "1" ]]; then
     --social_sample_prompt $social_sample_prompt \
     --eval_batch_size 1 \
     --dist_sampler 0 \
-    --max_his 20  \
+    --max_his $max_his  \
     --sample_num $sample_num \
     --use_friend_seq $use_friend_seq \
     --random_remove_friend $random_remove_friend \
@@ -98,7 +103,7 @@ else
     --social_sample_prompt $social_sample_prompt \
     --eval_batch_size 1 \
     --dist_sampler 0 \
-    --max_his 20  \
+    --max_his $max_his  \
     --sample_num $sample_num \
     --use_friend_seq $use_friend_seq \
     --random_remove_friend $random_remove_friend \

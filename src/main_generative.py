@@ -1,5 +1,8 @@
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
+# Suppress warnings about sequence length exceeding model maximum - we handle truncation explicitly
+warnings.filterwarnings("ignore", message=".*Token indices sequence length is longer than.*")
+warnings.filterwarnings("ignore", message=".*sequence length.*longer than.*maximum.*")
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import torch
@@ -145,6 +148,13 @@ def single_main():
 
                 logging.info(f"========== Finished {args.run_type} Round {round_num + 1}/{args.rounds} ==========")
                 if args.model_path: 
+                    # Evaluate models before saving (only for final round)
+                    if round_num + 1 == args.rounds:
+                        logging.info(f"--- Running evaluation before saving models for final round {round_num + 1} ---")
+                        # For 2-tower run types: runner_item tests item rec, runner_friend tests friend rec
+                        runner_item._test_recommender(use_in_memory=True)
+                        runner_friend._test_recommender(use_in_memory=True)
+                    
                     os.makedirs(args.model_path, exist_ok=True)
                     logging.info(f"Model directory ensured: {args.model_path}")
                     

@@ -8,6 +8,8 @@ import random
 import torch
 from pathlib import Path
 import wandb
+import csv
+from datetime import datetime
 def parse_global_args(parser):
     # Basic configuration
     parser.add_argument("--seed", type=int, default=2023, help="Random seed")
@@ -234,12 +236,13 @@ def setup_wandb(args):
             project="idgenrec-social-enhanced",
             name=args.run_id,
         )
-        
-        # Save all Python files in the codebase
-        wandb.run.log_code(
-            root=str(project_root),
-            include_fn=lambda path: path.endswith('.py')
-        )
+        try:
+            wandb.run.log_code(
+                root=str(project_root),
+                include_fn=lambda path: path.endswith('.py')
+            )
+        except Exception as e:
+            logging.warning(f"Failed to log code to wandb: {e}. Continuing without code logging.")
     return
 
 def insert_phrases_batch(prompt, positions, hist, max_input_len):
@@ -279,5 +282,59 @@ def insert_phrases_batch(prompt, positions, hist, max_input_len):
     final_tensor = torch.stack(batch_results, dim=0)
     
     return final_tensor
+
+def log_metrics_to_csv(args, test_type, metrics_names, metrics_values):
+    """
+    Log evaluation metrics to a master CSV file per dataset.
+    Each run appends a row to the dataset's master CSV file.
+    
+    Args:
+        args: Arguments object containing run_id, datasets, etc.
+        test_type: Type of test ('item' or 'friend')
+        metrics_names: List of metric names (e.g., ['hit@1', 'hit@5', ...])
+        metrics_values: List of metric values (same order as metrics_names)
+    """
+    dataset_str = getattr(args, 'datasets', 'UnknownDataset')
+    run_id = getattr(args, 'run_id', 'default')
+    
+    # Create CSV directory (same structure as log directory)
+    csv_folder = os.path.join(args.log_dir, "eval_metrics", dataset_str)
+    if not os.path.exists(csv_folder):
+        os.makedirs(csv_folder)
+    
+    # Use a single master CSV file per dataset
+    csv_file = os.path.join(csv_folder, "metrics.csv")
+    
+    # Check if file exists to determine if we need to write header
+    file_exists = os.path.exists(csv_file)
+    
+    # Prepare row data
+    row_data = {
+        'run_id': run_id,
+        'test_type': test_type,
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    # Add all metric values
+    for metric_name, metric_value in zip(metrics_names, metrics_values):
+        # Convert tensor to float if needed
+        if torch.is_tensor(metric_value):
+            metric_value = metric_value.item()
+        elif isinstance(metric_value, np.ndarray):
+            metric_value = float(metric_value)
+        row_data[metric_name] = f"{metric_value:.6f}"
+    
+    # Write to CSV
+    with open(csv_file, 'a', newline='') as f:
+        fieldnames = ['run_id', 'test_type', 'timestamp'] + metrics_names
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        
+        # Write header if file is new
+        if not file_exists:
+            writer.writeheader()
+        
+        writer.writerow(row_data)
+    
+    logging.info(f"Metrics logged to CSV: {csv_file}")
 
 

@@ -160,6 +160,11 @@ class CollatorGen:
             length = hist_lengths[i]
             p_s = p.replace("{history}", " ; " * (length))
             tokens = self.tokenizer.tokenize(p_s)
+            # Manually truncate tokens to ensure they fit within max_length (accounting for special tokens)
+            # max_length=512 includes special tokens, so we truncate to ~510 to leave room
+            max_tokens = 510
+            if len(tokens) > max_tokens:
+                tokens = tokens[:max_tokens]
             insert_p = [1 if token == ";" else 0 for token in tokens]
             tokenized_prompts.append(tokens)
             input_prompt_ph.append(p_s)

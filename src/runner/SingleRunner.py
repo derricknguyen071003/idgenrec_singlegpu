@@ -181,6 +181,13 @@ class SingleRunner:
                 hist_size = hist_ids.shape[1] # history size
                 input_tensor = hist_ids.view(-1, hist_ids.shape[-1]) # purchase sequence converted to ids
                 hist_att_flat = hist_att.view(-1, hist_att.shape[-1]) # purchase sequence attention mask
+                
+                # Truncate sequences to max_length=512 to avoid model indexing errors
+                max_seq_len = 512
+                if input_tensor.shape[1] > max_seq_len:
+                    input_tensor = input_tensor[:, :max_seq_len]
+                    hist_att_flat = hist_att_flat[:, :max_seq_len]
+                
                 output = self.model_gen.generate_with_grad(
                             input_tensor,
                             attention_mask=hist_att_flat, 
@@ -417,75 +424,75 @@ class SingleRunner:
             self.global_epoch_tracker += 1
             
             # Run validation at the end of each recommender epoch if validation loader is available
-            if self.val_loader_rec is not None:
-                val_loss = self._validate_recommender()
-                logging.info(f"Validation Loss: {val_loss:.4f}")
+            # if self.val_loader_rec is not None:
+            #     val_loss = self._validate_recommender()
+            #     logging.info(f"Validation Loss: {val_loss:.4f}")
                 
-                # Track validation loss
-                if val_loss is not None:
-                    self.val_losses.append({
-                        'round': current_round_num + 1,
-                        'epoch': rec_epoch + 1,
-                        'loss': val_loss,
-                        'global_step': self.global_epoch_tracker
-                    })
+            #     # Track validation loss
+            #     if val_loss is not None:
+            #         self.val_losses.append({
+            #             'round': current_round_num + 1,
+            #             'epoch': rec_epoch + 1,
+            #             'loss': val_loss,
+            #             'global_step': self.global_epoch_tracker
+            #         })
                 
-                if getattr(self.args, 'use_wandb', 0) and wandb.run is not None:
-                    wandb.log({"validation/loss": val_loss})
+            #     if getattr(self.args, 'use_wandb', 0) and wandb.run is not None:
+            #         wandb.log({"validation/loss": val_loss})
                 
-                # Early stopping and best model tracking
-                if val_loss is not None:
-                    improved = False
-                    # Check if validation loss improved for this round
-                    if val_loss < (round_best_val_loss - self.early_stopping_min_delta):
-                        improved = True
-                        round_best_val_loss = val_loss
-                        round_early_stopping_counter = 0
-                        logging.info(f"Validation loss improved to {val_loss:.4f} (round best: {round_best_val_loss:.4f})")
+            #     # Early stopping and best model tracking
+            #     if val_loss is not None:
+            #         improved = False
+            #         # Check if validation loss improved for this round
+            #         if val_loss < (round_best_val_loss - self.early_stopping_min_delta):
+            #             improved = True
+            #             round_best_val_loss = val_loss
+            #             round_early_stopping_counter = 0
+            #             logging.info(f"Validation loss improved to {val_loss:.4f} (round best: {round_best_val_loss:.4f})")
                         
-                        # Update global best if this is better
-                        if val_loss < (self.best_val_loss - self.early_stopping_min_delta):
-                            self.best_val_loss = val_loss
-                            logging.info(f"New global best validation loss: {self.best_val_loss:.4f}")
+            #             # Update global best if this is better
+            #             if val_loss < (self.best_val_loss - self.early_stopping_min_delta):
+            #                 self.best_val_loss = val_loss
+            #                 logging.info(f"New global best validation loss: {self.best_val_loss:.4f}")
                             
-                            # Save best model state if enabled
-                            if self.save_best_model:
-                                self.best_model_state = {
-                                    'model_rec': self.model_rec.state_dict().copy(),
-                                    'model_gen': self.model_gen.state_dict().copy(),
-                                    'round': current_round_num + 1,
-                                    'epoch': rec_epoch + 1,
-                                    'val_loss': val_loss
-                                }
-                                if self.use_diffusion and self.noise_head_rec is not None:
-                                    self.best_model_state['noise_head_rec'] = self.noise_head_rec.state_dict().copy()
-                                if self.model_social is not None:
-                                    self.best_model_state['model_social'] = self.model_social.state_dict().copy()
-                                if self.use_diffusion and self.noise_head_social is not None:
-                                    self.best_model_state['noise_head_social'] = self.noise_head_social.state_dict().copy()
-                    else:
-                        round_early_stopping_counter += 1
-                        logging.info(f"Validation loss did not improve this round. Patience: {round_early_stopping_counter}/{self.early_stopping_patience}")
+            #                 # Save best model state if enabled
+            #                 if self.save_best_model:
+            #                     self.best_model_state = {
+            #                         'model_rec': self.model_rec.state_dict().copy(),
+            #                         'model_gen': self.model_gen.state_dict().copy(),
+            #                         'round': current_round_num + 1,
+            #                         'epoch': rec_epoch + 1,
+            #                         'val_loss': val_loss
+            #                     }
+            #                     if self.use_diffusion and self.noise_head_rec is not None:
+            #                         self.best_model_state['noise_head_rec'] = self.noise_head_rec.state_dict().copy()
+            #                     if self.model_social is not None:
+            #                         self.best_model_state['model_social'] = self.model_social.state_dict().copy()
+            #                     if self.use_diffusion and self.noise_head_social is not None:
+            #                         self.best_model_state['noise_head_social'] = self.noise_head_social.state_dict().copy()
+            #         else:
+            #             round_early_stopping_counter += 1
+            #             logging.info(f"Validation loss did not improve this round. Patience: {round_early_stopping_counter}/{self.early_stopping_patience}")
                     
-                    # Check for early stopping (per round)
-                    if self.early_stopping_patience > 0 and round_early_stopping_counter >= self.early_stopping_patience:
-                        logging.info(f"Early stopping triggered after {self.early_stopping_patience} epochs without improvement in this round")
-                        if self.best_model_state is not None:
-                            logging.info(f"Best validation loss: {self.best_val_loss:.4f} at Round {self.best_model_state['round']}, Epoch {self.best_model_state['epoch']}")
-                            # Restore best model if available
-                            if self.save_best_model:
-                                logging.info("Restoring best model checkpoint")
-                                self.model_rec.load_state_dict(self.best_model_state['model_rec'])
-                                self.model_gen.load_state_dict(self.best_model_state['model_gen'])
-                                if 'noise_head_rec' in self.best_model_state:
-                                    self.noise_head_rec.load_state_dict(self.best_model_state['noise_head_rec'])
-                                if 'model_social' in self.best_model_state:
-                                    self.model_social.load_state_dict(self.best_model_state['model_social'])
-                                if 'noise_head_social' in self.best_model_state:
-                                    self.noise_head_social.load_state_dict(self.best_model_state['noise_head_social'])
-                        # Plot training curves before early stopping
-                        self._plot_training_curves()
-                        return  # Exit training early for this round
+            #         # Check for early stopping (per round)
+            #         if self.early_stopping_patience > 0 and round_early_stopping_counter >= self.early_stopping_patience:
+            #             logging.info(f"Early stopping triggered after {self.early_stopping_patience} epochs without improvement in this round")
+            #             if self.best_model_state is not None:
+            #                 logging.info(f"Best validation loss: {self.best_val_loss:.4f} at Round {self.best_model_state['round']}, Epoch {self.best_model_state['epoch']}")
+            #                 # Restore best model if available
+            #                 if self.save_best_model:
+            #                     logging.info("Restoring best model checkpoint")
+            #                     self.model_rec.load_state_dict(self.best_model_state['model_rec'])
+            #                     self.model_gen.load_state_dict(self.best_model_state['model_gen'])
+            #                     if 'noise_head_rec' in self.best_model_state:
+            #                         self.noise_head_rec.load_state_dict(self.best_model_state['noise_head_rec'])
+            #                     if 'model_social' in self.best_model_state:
+            #                         self.model_social.load_state_dict(self.best_model_state['model_social'])
+            #                     if 'noise_head_social' in self.best_model_state:
+            #                         self.noise_head_social.load_state_dict(self.best_model_state['noise_head_social'])
+            #             # Plot training curves before early stopping
+            #             self._plot_training_curves()
+            #             return  # Exit training early for this round
 
     def _validate_recommender(self):
         """Evaluate recommender model on validation set"""
@@ -628,6 +635,11 @@ class SingleRunner:
                 self._train_id_generator_phase(round_num)
             logging.info(f"========== Finished Alternation Round {round_num + 1}/{self.rounds} ==========")
             if self.args.model_path: 
+                # Evaluate models before saving (only for final round)
+                if round_num + 1 == self.rounds:
+                    logging.info(f"--- Running evaluation before saving models for final round {round_num + 1} ---")
+                    self._test_recommender(use_in_memory=True)
+                
                 os.makedirs(self.args.model_path, exist_ok=True)
                 logging.info(f"Model directory ensured: {self.args.model_path}")
                 gen_path = os.path.join(self.args.model_path, f"model_gen_round{round_num+1}_final.pt")
@@ -742,93 +754,178 @@ class SingleRunner:
             logging.info(f"Created recommender testloader for {dataset_name}, with {num_samples} samples ({num_batches} batches, batch_size={self.args.eval_batch_size})")
 
                    
-    def _test_recommender(self):
-        if self.args.rec_model_path:
-            self.get_testloader_item()
-            self.model_rec.eval()
-            logging.info(f"--- Testing Item Recommender Performance ---")
-            for loader in self.testloaders_rec:
-                self.test_dataset_task(loader, test_type="item")
-        if self.args.social_model_path:
-            self.get_testloader_friend()
-            logging.info(f"--- Testing Friend Recommender Performance ---")
-            for loader in self.testloaders_social:
-                self.test_dataset_task(loader, test_type="friend")
-        logging.info("--- Testing Finished ---")
+    def _test_recommender(self, use_in_memory=False):
+        """
+        Test/evaluate recommender models.
+        
+        Args:
+            use_in_memory: If True, use in-memory models (for evaluation after training).
+                          If False, load models from disk paths (for separate testing).
+        
+        Run type handling:
+        - original_idgenrec, social_to_id, social_to_both, social_to_rec: only test item rec
+        - idgenrec_friend, item_to_id_friendrec, item_to_rec_friendrec: only test friend rec
+        - 2id2rec, 2id2rec_socialtoid: test both item and friend recommender
+        """
+        run_type = getattr(self.args, 'run_type', 'original_idgenrec')
+        
+        # Determine what to test based on run_type and component
+        test_item = False
+        test_friend = False
+        
+        component = getattr(self, 'component', None)
+        
+        if run_type in ['original_idgenrec', 'social_to_id', 'social_to_both', 'social_to_rec']:
+            test_item = True
+        elif run_type in ['idgenrec_friend', 'item_to_id_friendrec', 'item_to_rec_friendrec']:
+            test_friend = True
+        elif run_type in ['2id2rec', '2id2rec_socialtoid']:
+            # For 2-tower run types, each runner tests only its own component
+            if component == 'item_rec':
+                test_item = True
+            elif component == 'friend_rec':
+                test_friend = True
+            else:
+                # Fallback: test both if component not specified
+                test_item = True
+                test_friend = True
+        else:
+            # Default: test based on available models/paths
+            if use_in_memory:
+                test_item = (self.model_rec is not None)
+                test_friend = (hasattr(self, 'model_social') and self.model_social is not None)
+            else:
+                test_item = (hasattr(self.args, 'rec_model_path') and self.args.rec_model_path)
+                test_friend = (hasattr(self.args, 'social_model_path') and self.args.social_model_path)
+        
+        # Test item recommender
+        if test_item:
+            if not hasattr(self, 'testloaders_rec') or self.testloaders_rec is None:
+                self.get_testloader_item()
+            
+            if use_in_memory:
+                if self.model_rec is not None:
+                    self.model_rec.eval()
+                    logging.info(f"--- Evaluating Item Recommender Performance ---")
+                    for loader in self.testloaders_rec:
+                        self.test_dataset_task(loader, test_type="item", model=self.model_rec)
+            else:
+                if hasattr(self.args, 'rec_model_path') and self.args.rec_model_path:
+                    logging.info(f"--- Testing Item Recommender Performance ---")
+                    for loader in self.testloaders_rec:
+                        self.test_dataset_task(loader, test_type="item")
+        
+        # Test friend recommender
+        if test_friend:
+            if not hasattr(self, 'testloaders_social') or self.testloaders_social is None:
+                self.get_testloader_friend()
+            
+            if use_in_memory:
+                # For 2-tower run types, use model_rec from friend runner (which is the social model)
+                # For other run types, use model_social if available
+                model_to_use = None
+                if run_type in ['2id2rec', '2id2rec_socialtoid'] and component == 'friend_rec':
+                    # In 2-tower mode, friend runner's model_rec is the social/friend model
+                    model_to_use = self.model_rec
+                elif hasattr(self, 'model_social') and self.model_social is not None:
+                    model_to_use = self.model_social
+                
+                if model_to_use is not None:
+                    model_to_use.eval()
+                    logging.info(f"--- Evaluating Friend Recommender Performance ---")
+                    for loader in self.testloaders_social:
+                        self.test_dataset_task(loader, test_type="friend", model=model_to_use)
+            else:
+                if hasattr(self.args, 'social_model_path') and self.args.social_model_path:
+                    logging.info(f"--- Testing Friend Recommender Performance ---")
+                    for loader in self.testloaders_social:
+                        self.test_dataset_task(loader, test_type="friend")
+        
+        logging.info("--- Testing/Evaluation Finished ---")
 
-    def test_dataset_task(self, testloader, test_type):        
+    def test_dataset_task(self, testloader, test_type, model=None):        
         test_total = 0
         with torch.no_grad():
-            if test_type == "item":
-                state_dict = torch.load(self.args.rec_model_path, map_location=self.device)
-                config = T5Config.from_pretrained(self.args.backbone)
-                rec_model = T5ForConditionalGeneration.from_pretrained(self.args.backbone, config=config)
-                if 'shared.weight' in state_dict:
-                    vocab_size = state_dict['shared.weight'].shape[0]
-                    current_vocab_size = len(self.tokenizer)
-                    # Handle vocabulary size mismatch (e.g., timestep tokens added)
-                    if vocab_size > current_vocab_size:
-                        # Check if difference matches expected timestep tokens
-                        num_timesteps = getattr(self.args, 'diffusion_timesteps', 100)
-                        expected_diff = num_timesteps
-                        if vocab_size - current_vocab_size == expected_diff:
-                            logging.info(f"Detected timestep tokens in checkpoint. Adding {expected_diff} timestep tokens to tokenizer.")
-                            self.timestep_token_ids = add_timestep_tokens_to_tokenizer(self.tokenizer, num_timesteps)
-                            current_vocab_size = len(self.tokenizer)
-                    rec_model.resize_token_embeddings(vocab_size)
-                rec_model.load_state_dict(state_dict)
-                rec_model.to(self.device)
-                rec_model.eval()
-                torch.cuda.empty_cache()
-                model_to_use = rec_model
-                # Ensure tokenizer vocab size matches model vocab size
-                # If timestep tokens were added, resize model to match tokenizer
-                model_vocab_size = model_to_use.config.vocab_size
-                tokenizer_vocab_size = len(self.tokenizer)
-                if tokenizer_vocab_size > model_vocab_size:
-                    logging.info(f"Resizing model vocab from {model_vocab_size} to {tokenizer_vocab_size} to match tokenizer (timestep tokens added).")
-                    model_to_use.resize_token_embeddings(tokenizer_vocab_size)
+            # If model is provided, use in-memory model; otherwise load from disk (original behavior)
+            if model is not None:
+                model_to_use = model
+                model_to_use.eval()
+                if test_type == "item":
+                    candidates = testloader.dataset.all_items
+                elif test_type == "friend":
+                    candidates = testloader.dataset.all_users
+            else:
+                # Original logic: load model from disk
+                if test_type == "item":
+                    state_dict = torch.load(self.args.rec_model_path, map_location=self.device)
+                    config = T5Config.from_pretrained(self.args.backbone)
+                    rec_model = T5ForConditionalGeneration.from_pretrained(self.args.backbone, config=config)
+                    if 'shared.weight' in state_dict:
+                        vocab_size = state_dict['shared.weight'].shape[0]
+                        current_vocab_size = len(self.tokenizer)
+                        # Handle vocabulary size mismatch (e.g., timestep tokens added)
+                        if vocab_size > current_vocab_size:
+                            # Check if difference matches expected timestep tokens
+                            num_timesteps = getattr(self.args, 'diffusion_timesteps', 100)
+                            expected_diff = num_timesteps
+                            if vocab_size - current_vocab_size == expected_diff:
+                                logging.info(f"Detected timestep tokens in checkpoint. Adding {expected_diff} timestep tokens to tokenizer.")
+                                self.timestep_token_ids = add_timestep_tokens_to_tokenizer(self.tokenizer, num_timesteps)
+                                current_vocab_size = len(self.tokenizer)
+                        rec_model.resize_token_embeddings(vocab_size)
+                    rec_model.load_state_dict(state_dict)
+                    rec_model.to(self.device)
+                    rec_model.eval()
+                    torch.cuda.empty_cache()
+                    model_to_use = rec_model
+                    # Ensure tokenizer vocab size matches model vocab size
+                    # If timestep tokens were added, resize model to match tokenizer
                     model_vocab_size = model_to_use.config.vocab_size
-                elif tokenizer_vocab_size != model_vocab_size:
-                    logging.error(f"Tokenizer vocab size ({tokenizer_vocab_size}) != Model vocab size ({model_vocab_size}). "
-                                 f"This will cause CUDA errors. Please ensure they match.")
-                    raise ValueError(f"Vocabulary size mismatch: tokenizer={tokenizer_vocab_size}, model={model_vocab_size}")
-                candidates = testloader.dataset.all_items
-            elif test_type == "friend":
-                state_dict = torch.load(self.args.social_model_path, map_location=self.device)
-                config = T5Config.from_pretrained(self.args.backbone)
-                social_model = T5ForConditionalGeneration.from_pretrained(self.args.backbone, config=config)
-                if 'shared.weight' in state_dict:
-                    vocab_size = state_dict['shared.weight'].shape[0]
-                    current_vocab_size = len(self.tokenizer)
-                    # Handle vocabulary size mismatch (e.g., timestep tokens added)
-                    if vocab_size > current_vocab_size:
-                        # Check if difference matches expected timestep tokens
-                        num_timesteps = getattr(self.args, 'diffusion_timesteps', 100)
-                        expected_diff = num_timesteps
-                        if vocab_size - current_vocab_size == expected_diff:
-                            logging.info(f"Detected timestep tokens in checkpoint. Adding {expected_diff} timestep tokens to tokenizer.")
-                            self.timestep_token_ids = add_timestep_tokens_to_tokenizer(self.tokenizer, num_timesteps)
-                            current_vocab_size = len(self.tokenizer)
-                    social_model.resize_token_embeddings(vocab_size)
-                social_model.load_state_dict(state_dict)
-                social_model.to(self.device)
-                social_model.eval()
-                torch.cuda.empty_cache()
-                model_to_use = social_model
-                # Ensure tokenizer vocab size matches model vocab size
-                # If timestep tokens were added, resize model to match tokenizer
-                model_vocab_size = model_to_use.config.vocab_size
-                tokenizer_vocab_size = len(self.tokenizer)
-                if tokenizer_vocab_size > model_vocab_size:
-                    logging.info(f"Resizing model vocab from {model_vocab_size} to {tokenizer_vocab_size} to match tokenizer (timestep tokens added).")
-                    model_to_use.resize_token_embeddings(tokenizer_vocab_size)
+                    tokenizer_vocab_size = len(self.tokenizer)
+                    if tokenizer_vocab_size > model_vocab_size:
+                        logging.info(f"Resizing model vocab from {model_vocab_size} to {tokenizer_vocab_size} to match tokenizer (timestep tokens added).")
+                        model_to_use.resize_token_embeddings(tokenizer_vocab_size)
+                        model_vocab_size = model_to_use.config.vocab_size
+                    elif tokenizer_vocab_size != model_vocab_size:
+                        logging.error(f"Tokenizer vocab size ({tokenizer_vocab_size}) != Model vocab size ({model_vocab_size}). "
+                                     f"This will cause CUDA errors. Please ensure they match.")
+                        raise ValueError(f"Vocabulary size mismatch: tokenizer={tokenizer_vocab_size}, model={model_vocab_size}")
+                    candidates = testloader.dataset.all_items
+                elif test_type == "friend":
+                    state_dict = torch.load(self.args.social_model_path, map_location=self.device)
+                    config = T5Config.from_pretrained(self.args.backbone)
+                    social_model = T5ForConditionalGeneration.from_pretrained(self.args.backbone, config=config)
+                    if 'shared.weight' in state_dict:
+                        vocab_size = state_dict['shared.weight'].shape[0]
+                        current_vocab_size = len(self.tokenizer)
+                        # Handle vocabulary size mismatch (e.g., timestep tokens added)
+                        if vocab_size > current_vocab_size:
+                            # Check if difference matches expected timestep tokens
+                            num_timesteps = getattr(self.args, 'diffusion_timesteps', 100)
+                            expected_diff = num_timesteps
+                            if vocab_size - current_vocab_size == expected_diff:
+                                logging.info(f"Detected timestep tokens in checkpoint. Adding {expected_diff} timestep tokens to tokenizer.")
+                                self.timestep_token_ids = add_timestep_tokens_to_tokenizer(self.tokenizer, num_timesteps)
+                                current_vocab_size = len(self.tokenizer)
+                        social_model.resize_token_embeddings(vocab_size)
+                    social_model.load_state_dict(state_dict)
+                    social_model.to(self.device)
+                    social_model.eval()
+                    torch.cuda.empty_cache()
+                    model_to_use = social_model
+                    # Ensure tokenizer vocab size matches model vocab size
+                    # If timestep tokens were added, resize model to match tokenizer
                     model_vocab_size = model_to_use.config.vocab_size
-                elif tokenizer_vocab_size != model_vocab_size:
-                    logging.error(f"Tokenizer vocab size ({tokenizer_vocab_size}) != Model vocab size ({model_vocab_size}). "
-                                 f"This will cause CUDA errors. Please ensure they match.")
-                    raise ValueError(f"Vocabulary size mismatch: tokenizer={tokenizer_vocab_size}, model={model_vocab_size}")
-                candidates = testloader.dataset.all_users
+                    tokenizer_vocab_size = len(self.tokenizer)
+                    if tokenizer_vocab_size > model_vocab_size:
+                        logging.info(f"Resizing model vocab from {model_vocab_size} to {tokenizer_vocab_size} to match tokenizer (timestep tokens added).")
+                        model_to_use.resize_token_embeddings(tokenizer_vocab_size)
+                        model_vocab_size = model_to_use.config.vocab_size
+                    elif tokenizer_vocab_size != model_vocab_size:
+                        logging.error(f"Tokenizer vocab size ({tokenizer_vocab_size}) != Model vocab size ({model_vocab_size}). "
+                                     f"This will cause CUDA errors. Please ensure they match.")
+                        raise ValueError(f"Vocabulary size mismatch: tokenizer={tokenizer_vocab_size}, model={model_vocab_size}")
+                    candidates = testloader.dataset.all_users
             candidate_trie = gt.Trie(
                 [
                     [0] + self.tokenizer.encode(candidate)
@@ -913,5 +1010,6 @@ class SingleRunner:
             
             for i in range(len(self.metrics)):
                 logging.info(f'{metrics_res[i]:.3f}')
+            metrics_values = [metrics_res[i].item() for i in range(len(self.metrics))]
+            utils.log_metrics_to_csv(self.args, test_type, self.metrics, metrics_values)
         
-   
