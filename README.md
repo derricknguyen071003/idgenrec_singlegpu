@@ -1,4 +1,4 @@
-Brainstorm: Text invariant learning (instead of learning the most robust structure, we learn the most robust ID)
+
 
 # IDGenRec with Discrete Diffusion
 
